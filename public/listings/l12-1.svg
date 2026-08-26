@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 800" width="1200" height="800" role="img">
+<defs>
+<linearGradient id="sky" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#d3dbd6"/><stop offset="0.62" stop-color="#f4f1e8"/><stop offset="1" stop-color="#f4f1e8"/></linearGradient>
+<radialGradient id="glow" cx="50%" cy="50%" r="50%"><stop offset="0" stop-color="#e8d7ae" stop-opacity="0.95"/><stop offset="0.45" stop-color="#e8d7ae" stop-opacity="0.32"/><stop offset="1" stop-color="#e8d7ae" stop-opacity="0"/></radialGradient>
+<linearGradient id="haze" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#f4f1e8" stop-opacity="0"/><stop offset="1" stop-color="#f4f1e8" stop-opacity="0.78"/></linearGradient>
+<linearGradient id="street" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#8b8f86"/><stop offset="1" stop-color="#57635a" stop-opacity="0.9"/></linearGradient>
+<radialGradient id="vig" cx="50%" cy="46%" r="72%"><stop offset="0.55" stop-color="#16181a" stop-opacity="0"/><stop offset="1" stop-color="#16181a" stop-opacity="0.24"/></radialGradient>
+<linearGradient id="warm" x1="0" y1="0" x2="1" y2="0.4"><stop offset="0" stop-color="#e8d7ae" stop-opacity="0.18"/><stop offset="1" stop-color="#e8d7ae" stop-opacity="0"/></linearGradient>
+</defs>
+<rect width="1200" height="800" fill="url(#sky)"/>
+<circle cx="640" cy="152" r="300" fill="url(#glow)"/>
+<circle cx="640" cy="152" r="52" fill="#e8d7ae" opacity="0.85"/>
+<rect x="10" y="412" width="206" height="388" fill="#c9d1ca" opacity="0.7"/><rect x="221" y="501" width="175" height="299" fill="#c9d1ca" opacity="0.7"/><rect x="537" y="498" width="168" height="302" fill="#c9d1ca" opacity="0.7"/><rect x="750" y="473" width="122" height="327" fill="#c9d1ca" opacity="0.7"/><rect x="1032" y="488" width="201" height="312" fill="#c9d1ca" opacity="0.7"/><rect x="270" y="260" width="660" height="380" fill="#78857a"/><rect x="296" y="284" width="608" height="66" fill="#f9f6ea" opacity="0.86"/><rect x="397.3333333333333" y="284" width="6" height="66" fill="#57635a"/><rect x="498.66666666666663" y="284" width="6" height="66" fill="#57635a"/><rect x="600" y="284" width="6" height="66" fill="#57635a"/><rect x="701.3333333333333" y="284" width="6" height="66" fill="#57635a"/><rect x="802.6666666666666" y="284" width="6" height="66" fill="#57635a"/><rect x="296" y="376" width="608" height="66" fill="#f9f6ea" opacity="0.90"/><rect x="397.3333333333333" y="376" width="6" height="66" fill="#57635a"/><rect x="498.66666666666663" y="376" width="6" height="66" fill="#57635a"/><rect x="600" y="376" width="6" height="66" fill="#57635a"/><rect x="701.3333333333333" y="376" width="6" height="66" fill="#57635a"/><rect x="802.6666666666666" y="376" width="6" height="66" fill="#57635a"/><rect x="296" y="468" width="608" height="66" fill="#f9f6ea" opacity="0.79"/><rect x="397.3333333333333" y="468" width="6" height="66" fill="#57635a"/><rect x="498.66666666666663" y="468" width="6" height="66" fill="#57635a"/><rect x="600" y="468" width="6" height="66" fill="#57635a"/><rect x="701.3333333333333" y="468" width="6" height="66" fill="#57635a"/><rect x="802.6666666666666" y="468" width="6" height="66" fill="#57635a"/><rect x="296" y="560" width="608" height="66" fill="#f9f6ea" opacity="0.81"/><rect x="397.3333333333333" y="560" width="6" height="66" fill="#57635a"/><rect x="498.66666666666663" y="560" width="6" height="66" fill="#57635a"/><rect x="600" y="560" width="6" height="66" fill="#57635a"/><rect x="701.3333333333333" y="560" width="6" height="66" fill="#57635a"/><rect x="802.6666666666666" y="560" width="6" height="66" fill="#57635a"/><rect x="252" y="238" width="696" height="24" fill="#57635a"/>
+<rect x="0" y="440" width="1200" height="210" fill="url(#haze)" opacity="0.34"/>
+<rect x="0" y="650" width="1200" height="150" fill="url(#street)"/>
+<rect x="0" y="650" width="1200" height="7" fill="#f9f6ea" opacity="0.28"/>
+<rect x="0" y="728" width="1200" height="2" fill="#f9f6ea" opacity="0.16"/>
+<path d="M0 800 L0 147 L164 202 L184 800 Z" fill="#57635a" opacity="0.5"/>
+<rect width="1200" height="800" fill="url(#warm)"/>
+<rect width="1200" height="800" fill="url(#vig)"/>
+</svg>
