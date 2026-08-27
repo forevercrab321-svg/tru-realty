@@ -50,7 +50,7 @@ function LoginInner() {
               Recruiting, onboarding, transactions, commissions, listings, training and payouts — one platform instead of nine.
             </p>
             <ul className="mt-7 space-y-2.5">
-              {["46 agents across 4 offices", "$434M in year-to-date volume", "1 place to close, get paid and grow"].map((t) => (
+              {["16 agents across 4 New York offices", "$238M in year-to-date closed volume", "One place to close, get paid and grow"].map((t) => (
                 <li key={t} className="flex items-center gap-2.5 text-[13.5px] text-white/80">
                   <span className="flex size-4 items-center justify-center rounded-full bg-brand-500/40"><Check className="size-2.5 text-white" strokeWidth={3} /></span>
                   {t}
