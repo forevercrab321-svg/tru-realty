@@ -20,7 +20,7 @@ REAL_DATA = "false"
 #   https://api.moonshot.cn/v1   for keys from platform.moonshot.cn   (China)
 #
 # GET /health tells you which one is live and whether the key works against it.
-KIMI_BASE_URL = "https://api.moonshot.ai/v1"
+KIMI_BASE_URL = "https://api.moonshot.cn/v1"
 
 # Audit log and rate-limit buckets. Created with:
 #   npx wrangler kv namespace create AUDIT
