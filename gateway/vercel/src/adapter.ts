@@ -7,11 +7,17 @@
  * the bug this file exists to avoid. Node functions run on AWS Lambda, a different network.
  *
  * Everything else is `handle()` — the same function, the same permission checks, the same
- * redaction, the same audit log. Only the twenty lines below are Vercel-specific.
+ * redaction, the same audit log. Only the adapter below is Vercel-specific.
+ *
+ * This file is the SOURCE. `npm run build:gateway` bundles it, with the handler and the
+ * app's policy and tool modules inlined, into `api/gateway.mjs` — one self-contained file
+ * with no imports to resolve. That is deliberate: a serverless builder has its own opinions
+ * about extensions, `type: module` and sibling files, and none of them can go wrong if
+ * there is nothing to resolve. Edit here, never in api/.
  */
 
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { handle } from "../gateway.bundle.js";
+import { handle } from "../../src/index";
 
 /*
  * No `export const config = { runtime: "edge" }` here, and there must never be one.

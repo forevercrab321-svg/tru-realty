@@ -130,9 +130,15 @@ curl -s https://<the-url-vercel-printed>/health
 
 The login is interactive and belongs to you — nothing here needs your token.
 
-**The runtime is pinned to Node.js on purpose.** Vercel's Edge Functions run on
-Cloudflare's network, which is precisely what `api.kimi.com` refuses. `api/gateway.ts`
-sets `runtime: "nodejs"`; do not change it to `edge`.
+**Node.js runtime, on purpose.** It is the default for an `api/*` function and runs on AWS
+Lambda. Vercel's Edge Functions run on Cloudflare's network, which is precisely what
+`api.kimi.com` refuses — so there is no `runtime: "edge"` export in the adapter, and adding
+one would reintroduce the bug this host exists to avoid.
+
+**`api/gateway.mjs` is generated.** Edit `src/adapter.ts` and run `npm run build:gateway`
+from the repo root. The function ships as one self-contained file with nothing to resolve,
+because a serverless builder has its own opinions about extensions, `type: module` and
+sibling imports, and none of them can go wrong when there is nothing left to import.
 
 One limitation to know: the audit log and rate limits are per-instance memory on Vercel,
 and Lambda recycles instances. That blunts a burst but is not a durable record. For real
