@@ -39,6 +39,7 @@ const env = {
   KIMI_BASE_URL: process.env.KIMI_BASE_URL,
   KIMI_MODEL: process.env.KIMI_MODEL,
   KIMI_USER_AGENT: process.env.KIMI_USER_AGENT,
+  KIMI_OMIT_TEMPERATURE: process.env.KIMI_OMIT_TEMPERATURE,
   DEMO_SESSIONS: process.env.DEMO_SESSIONS,
   REAL_DATA: process.env.REAL_DATA,
   AUDIT: store,

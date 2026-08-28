@@ -14,6 +14,12 @@ layer; they do not share permissions.
 | **Skills** | respond | respond · verify · operate | respond · verify · operate |
 | **Model** | `kimi-k3`, temp 0.4, 1.2K out | `kimi-k3`, temp 0.3, 2K out | `kimi-k3`, temp 0.2, 3K out |
 
+The model id comes from `KIMI_MODEL`, because ids belong to the endpoint, not to the app.
+So does sampling: the subscription endpoint pins temperature to 1 and rejects the field
+outright, so the gateway drops it on the first refusal and remembers. The temperatures above
+are therefore a preference an endpoint may override — **tier 3's determinism comes from the
+tool layer and the permission checks, never from the sampler.**
+
 Definitions live in `lib/ai/agents.ts`. Nothing about a tier is configured in more than one
 place.
 
@@ -76,9 +82,21 @@ that people outside the brokerage may have written.
 ## Where the key lives
 
 The app is a static export. There is nowhere in it to keep a secret, so **the key is not in
-the app**. It lives in a Cloudflare Worker (`gateway/`) that holds it as a secret, derives
-the caller's identity from a signed session cookie it verifies itself, re-runs every
-permission check, redacts, and logs. See `gateway/README.md`.
+the app**. It lives in the gateway (`gateway/`), which holds it as a secret, derives the
+caller's identity from a signed session cookie it verifies itself, re-runs every permission
+check, redacts, and logs. See `gateway/README.md`.
+
+**It runs on Vercel, not on Cloudflare Workers**, and that is not a preference. Same key,
+same URL, same headers, different origin:
+
+    from a normal client / Vercel Node function → 401 JSON, then 200 once authenticated
+    from a Cloudflare Worker                    → 403, an HTML Cloudflare block page
+
+A JSON error means the request reached Kimi and was evaluated. An HTML block page means it
+never got there. `api.kimi.com` refuses Cloudflare egress, so the gateway is deployed on
+Vercel's **Node** runtime — Vercel's Edge runtime is Cloudflare's network and would
+reproduce the bug. `gateway/vercel/src/adapter.ts` says so at the top; the absence of an
+`export const config = { runtime: "edge" }` there is load-bearing.
 
 Without the gateway the app runs an **offline engine**: the same tools, the same scope, the
 same redaction, resolved in the browser against the seeded data, with the result shown as
@@ -86,9 +104,19 @@ JSON instead of prose. It is labelled offline in the window. This is deliberate 
 the demo works on GitHub Pages without anyone being tempted to ship a key into a public
 bundle, and it means the permission behaviour is demonstrable with no infrastructure at all.
 
-**One thing to know before buying anything:** a Kimi *membership* and the Kimi *Developer
-Platform API* are separate products with separate billing. A monthly subscription does not
-include API credits. The API needs its own funded account at `platform.kimi.ai`.
+**Three endpoints, and a key is valid at exactly one of them.** All three issue `sk-` keys,
+so a key from the wrong one fails in a way that reads as "bad key":
+
+| Endpoint | Billing | Model id |
+|---|---|---|
+| `https://api.moonshot.ai/v1` | pay-as-you-go, `platform.kimi.ai` | `kimi-k3` |
+| `https://api.moonshot.cn/v1` | pay-as-you-go, `platform.moonshot.cn` | `kimi-k3` |
+| `https://api.kimi.com/coding/v1` | **the monthly Kimi subscription's own quota** | `k3` |
+
+The third one is the correction worth recording: a Kimi membership *does* reach an API — the
+Kimi Code endpoint, billed against the plan rather than per token. It is not the Developer
+Platform, and a platform key will not work there or vice versa. `GET /health` probes all
+three at once and names the one your key belongs to.
 
 ## What the verify tools already found
 

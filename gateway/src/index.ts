@@ -72,6 +72,11 @@ export interface Env {
   KIMI_MODEL?: string;
   /** Sent on every outbound call. Some Kimi endpoints WAF-block an empty User-Agent. */
   KIMI_USER_AGENT?: string;
+  /**
+   * Set to "true" to never send `temperature`. Only needed to skip the one probe request
+   * on an endpoint already known to pin sampling — the handler learns this by itself.
+   */
+  KIMI_OMIT_TEMPERATURE?: string;
 }
 
 const DEFAULT_KIMI_BASE = "https://api.moonshot.ai/v1";
@@ -187,25 +192,59 @@ interface ChatMessage {
   tool_call_id?: string;
 }
 
+/**
+ * Whether this endpoint refuses the `temperature` field, learned at runtime.
+ *
+ * Sampling is a property of the endpoint, not of the app — the same lesson the model id
+ * already taught. `api.kimi.com/coding/v1` pins its subscription models to temperature 1
+ * and answers anything else with `400 invalid temperature: only 1 is allowed for this
+ * model`, while both pay-as-you-go endpoints accept the full range. Rather than hardcode
+ * which is which, the first refusal is remembered for the life of the instance, so the
+ * extra round trip is paid once and not on every turn.
+ *
+ * The tiers still declare their temperatures. On an endpoint that pins sampling those are
+ * a preference the endpoint overrides — the determinism tier 3 needs comes from the tool
+ * layer and the permission checks, never from the sampler.
+ */
+let omitTemperature = false;
+
 async function callKimi(env: Env, model: string, temperature: number, maxTokens: number, messages: ChatMessage[], tools: unknown[]) {
-  const res = await fetch(`${kimiBase(env)}/chat/completions`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${env.KIMI_API_KEY}`,
-      "Content-Type": "application/json",
-      // api.kimi.com sits behind a WAF that 403s a request with no User-Agent and
-      // returns an HTML challenge page, which looks nothing like an auth failure.
-      "User-Agent": env.KIMI_USER_AGENT || "kimi-cli/1.0",
-      Accept: "application/json",
-    },
-    body: JSON.stringify({
-      model,
-      messages,
-      temperature,
-      max_tokens: maxTokens,
-      ...(tools.length ? { tools, tool_choice: "auto" } : {}),
-    }),
-  });
+  if (env.KIMI_OMIT_TEMPERATURE === "true") omitTemperature = true;
+
+  const send = (withTemperature: boolean) =>
+    fetch(`${kimiBase(env)}/chat/completions`, {
+      method: "POST",
+      headers: {
+        // Trimmed: a trailing newline from a copy-paste is the single most common way a
+        // good key looks like a bad one, and some runtimes reject the header outright.
+        Authorization: `Bearer ${env.KIMI_API_KEY.trim()}`,
+        "Content-Type": "application/json",
+        // api.kimi.com sits behind a WAF that 403s a request with no User-Agent and
+        // returns an HTML challenge page, which looks nothing like an auth failure.
+        "User-Agent": env.KIMI_USER_AGENT || "kimi-cli/1.0",
+        Accept: "application/json",
+      },
+      body: JSON.stringify({
+        model,
+        messages,
+        ...(withTemperature ? { temperature } : {}),
+        max_tokens: maxTokens,
+        ...(tools.length ? { tools, tool_choice: "auto" } : {}),
+      }),
+    });
+
+  let res = await send(!omitTemperature);
+
+  if (res.status === 400 && !omitTemperature) {
+    const detail = await res.text();
+    if (/temperature/i.test(detail)) {
+      omitTemperature = true;
+      res = await send(false);
+    } else {
+      throw new Error(`Kimi 400: ${detail.slice(0, 300)}`);
+    }
+  }
+
   if (!res.ok) {
     const detail = await res.text();
     throw new Error(`Kimi ${res.status}: ${detail.slice(0, 300)}`);
@@ -257,7 +296,7 @@ export async function handle(req: Request, env: Env): Promise<Response> {
         hasWhitespace: /\s/.test(k),
         looksLikeMoonshotKey: k.startsWith("sk-"),
         note: /\s/.test(k)
-          ? "The key contains whitespace or a newline — almost certainly a paste artefact. Re-run `wrangler secret put KIMI_API_KEY` and paste without a trailing newline."
+          ? "The key has whitespace around it — a paste artefact. Harmless: it is trimmed before every call. Re-enter it without the stray character if you want this warning to clear."
           : !k.startsWith("sk-")
             ? "Moonshot platform keys start with `sk-`. This does not, so it is probably not a Developer Platform API key — a Kimi app subscription does not issue one."
             : undefined,

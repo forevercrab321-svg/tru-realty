@@ -4397,11 +4397,15 @@ async function underLimit(env, key, ceiling) {
   await env.AUDIT.put(bucket, String(n + 1), { expirationTtl: 7200 });
   return true;
 }
+var omitTemperature = false;
 async function callKimi(env, model, temperature, maxTokens, messages, tools) {
-  const res = await fetch(`${kimiBase(env)}/chat/completions`, {
+  if (env.KIMI_OMIT_TEMPERATURE === "true") omitTemperature = true;
+  const send = (withTemperature) => fetch(`${kimiBase(env)}/chat/completions`, {
     method: "POST",
     headers: {
-      Authorization: `Bearer ${env.KIMI_API_KEY}`,
+      // Trimmed: a trailing newline from a copy-paste is the single most common way a
+      // good key looks like a bad one, and some runtimes reject the header outright.
+      Authorization: `Bearer ${env.KIMI_API_KEY.trim()}`,
       "Content-Type": "application/json",
       // api.kimi.com sits behind a WAF that 403s a request with no User-Agent and
       // returns an HTML challenge page, which looks nothing like an auth failure.
@@ -4411,11 +4415,21 @@ async function callKimi(env, model, temperature, maxTokens, messages, tools) {
     body: JSON.stringify({
       model,
       messages,
-      temperature,
+      ...withTemperature ? { temperature } : {},
       max_tokens: maxTokens,
       ...tools.length ? { tools, tool_choice: "auto" } : {}
     })
   });
+  let res = await send(!omitTemperature);
+  if (res.status === 400 && !omitTemperature) {
+    const detail = await res.text();
+    if (/temperature/i.test(detail)) {
+      omitTemperature = true;
+      res = await send(false);
+    } else {
+      throw new Error(`Kimi 400: ${detail.slice(0, 300)}`);
+    }
+  }
   if (!res.ok) {
     const detail = await res.text();
     throw new Error(`Kimi ${res.status}: ${detail.slice(0, 300)}`);
@@ -4443,7 +4457,7 @@ async function handle(req, env) {
         prefix: k.slice(0, 3),
         hasWhitespace: /\s/.test(k),
         looksLikeMoonshotKey: k.startsWith("sk-"),
-        note: /\s/.test(k) ? "The key contains whitespace or a newline \u2014 almost certainly a paste artefact. Re-run `wrangler secret put KIMI_API_KEY` and paste without a trailing newline." : !k.startsWith("sk-") ? "Moonshot platform keys start with `sk-`. This does not, so it is probably not a Developer Platform API key \u2014 a Kimi app subscription does not issue one." : void 0
+        note: /\s/.test(k) ? "The key has whitespace around it \u2014 a paste artefact. Harmless: it is trimmed before every call. Re-enter it without the stray character if you want this warning to clear." : !k.startsWith("sk-") ? "Moonshot platform keys start with `sk-`. This does not, so it is probably not a Developer Platform API key \u2014 a Kimi app subscription does not issue one." : void 0
       };
       const ua = env.KIMI_USER_AGENT || "kimi-cli/1.0";
       const describe = (text) => {

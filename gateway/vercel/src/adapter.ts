@@ -14,6 +14,13 @@
  * with no imports to resolve. That is deliberate: a serverless builder has its own opinions
  * about extensions, `type: module` and sibling files, and none of them can go wrong if
  * there is nothing to resolve. Edit here, never in api/.
+ *
+ * ROUTING. The gateway answers /health, /session and /chat from one function, so
+ * `vercel.json` rewrites every path to `/api/gateway` and the handler switches on the
+ * pathname. That note lives here rather than in the JSON because `vercel.json` is
+ * validated against a schema with `additionalProperties: false` — a `"// comment"` key is
+ * not ignored, it is a hard "Invalid request" at import time. Keep that file free of
+ * anything the schema does not name.
  */
 
 import type { IncomingMessage, ServerResponse } from "node:http";
@@ -75,6 +82,7 @@ const env = {
   KIMI_BASE_URL: process.env.KIMI_BASE_URL,
   KIMI_MODEL: process.env.KIMI_MODEL,
   KIMI_USER_AGENT: process.env.KIMI_USER_AGENT,
+  KIMI_OMIT_TEMPERATURE: process.env.KIMI_OMIT_TEMPERATURE,
   DEMO_SESSIONS: process.env.DEMO_SESSIONS,
   REAL_DATA: process.env.REAL_DATA,
   AUDIT: store,
