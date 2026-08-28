@@ -15,6 +15,9 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { Timeline } from "@/components/ui/timeline";
 import { Dropdown, DropdownContent, DropdownItem, DropdownLabel, DropdownTrigger } from "@/components/ui/dropdown";
 import { useStore } from "@/lib/store";
+import { useSession } from "@/lib/session";
+import { ownsRecord } from "@/lib/record-access";
+import { NoAccess } from "@/components/shared/no-access";
 import { LISTING_STATUS_LABEL } from "@/data/listings";
 import { agentById, agentName } from "@/data/agents";
 import { compactUsd, dateMed, num, pct, usd } from "@/lib/format";
@@ -23,9 +26,20 @@ import type { ListingStatus } from "@/types";
 import { asset } from "@/lib/utils";
 
 export function ListingDetail({ id, base }: { id: string; base: string }) {
+  const { account } = useSession();
   const { listings, updateListingStatus, transactions } = useStore();
   const listing = listings.find((l) => l.id === id);
   if (!listing) return notFound();
+  if (!ownsRecord(account, base, [listing.listingAgentId])) {
+    return (
+      <NoAccess
+        role={account?.role ?? "agent"}
+        backHref={`${base}/listings`}
+        backLabel="Back to your listings"
+      />
+    );
+  }
+
   const agent = agentById(listing.listingAgentId)!;
   const tx = transactions.find((t) => t.address === listing.address);
   const ppsf = Math.round(listing.price / listing.sqft);

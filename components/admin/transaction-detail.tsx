@@ -21,6 +21,8 @@ import { Dropdown, DropdownContent, DropdownItem, DropdownLabel, DropdownTrigger
 import { AddTaskDialog, UploadDocumentDialog } from "@/components/admin/create-dialogs";
 import { useStore } from "@/lib/store";
 import { useSession } from "@/lib/session";
+import { ownsRecord } from "@/lib/record-access";
+import { NoAccess } from "@/components/shared/no-access";
 import { TX_STAGES } from "@/data/transactions";
 import { agentById, agentName } from "@/data/agents";
 import { userName } from "@/data/company";
@@ -37,6 +39,16 @@ export function TransactionDetail({ id, base }: { id: string; base: string }) {
   const [note, setNote] = React.useState("");
 
   if (!tx) return notFound();
+  if (!ownsRecord(account, base, [tx.agentId, tx.coAgentId])) {
+    return (
+      <NoAccess
+        role={account?.role ?? "agent"}
+        backHref={`${base}/transactions`}
+        backLabel="Back to your deals"
+      />
+    );
+  }
+
 
   const agent = agentById(tx.agentId)!;
   const stageIdx = OPEN_STAGES.findIndex((s) => s.key === tx.stage);

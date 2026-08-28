@@ -38,16 +38,36 @@ export const payouts: Payout[] = closed.map((t, i) => ({
   reference: `DISB-${t.ref.split("-")[2]}`,
 }));
 
+/**
+ * One deliberately unbalanced payout, so the assistants' `verify` class has a real defect
+ * to find on seeded data. It is planted here, in the open, rather than left as a bug in
+ * the arithmetic above — a demo that depends on a genuine defect stops working the moment
+ * someone fixes it, and nobody can tell the two apart.
+ *
+ * Delete this the moment real payout data arrives.
+ */
+export const PLANTED_VARIANCE = { reference: "DISB-1046", amount: 3836 };
+
 /** Pending disbursements for deals that have reached closing but not funded. */
 export const pendingPayouts: Payout[] = transactions
   .filter((t) => t.stage === "closing" || t.stage === "final_walkthrough")
   .map((t) => ({
     id: `po_p_${t.id}`, agentId: t.agentId, transactionId: t.id, period: t.closingDate.slice(0, 7),
     grossCommission: t.commission.sideCommission,
-    deductions: t.commission.brokerageSplit + t.commission.transactionFee + t.commission.companyFee,
-    netPayout: t.commission.netAgent, method: "ACH", status: "pending", issuedAt: null,
+    // This branch used to omit teamSplit and referralFee, which the closed branch above
+    // includes — so gross minus deductions did not equal the net on the same row, visibly,
+    // on the payouts screen. The seed deliberately keeps one row that does not reconcile
+    // (see PLANTED_VARIANCE below) so the verify tools have something real to catch; that
+    // is demo data, not arithmetic that disagrees with itself.
+    deductions:
+      t.commission.brokerageSplit + t.commission.transactionFee + t.commission.companyFee +
+      t.commission.teamSplit + t.commission.referralFee,
+    netPayout: t.commission.netAgent, method: "ACH" as const, status: "pending" as const, issuedAt: null,
     reference: `DISB-${t.ref.split("-")[2]}`,
-  }));
+  }))
+  .map((p) => (p.reference === PLANTED_VARIANCE.reference
+    ? { ...p, netPayout: p.netPayout - PLANTED_VARIANCE.amount }
+    : p));
 
 export const allPayouts = [...payouts, ...pendingPayouts];
 

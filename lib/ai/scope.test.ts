@@ -1,9 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { TOOLS, TOOL_BY_NAME, isWriteIntent } from "./tools";
 import { allowTool, redactFor, scopeFor, REDACTED, type Caller } from "./policy";
-import { AGENTS } from "./agents";
+import { AGENTS, TOOL_PERMISSION } from "./agents";
 import { normalizeAddress, unusedFloorArea } from "@/lib/nyc/open-data";
-import { agents, clients, transactions } from "@/data";
+import { agents, allPayouts, clients, listings, transactions } from "@/data";
 
 /**
  * These are the tests that matter. Everything else in this product can be checked by
@@ -373,5 +373,139 @@ describe("search_listings when nothing matches", () => {
     const shown = json(out.closest);
     expect(shown).not.toContain("commission");
     expect(shown).not.toContain("draft");
+  });
+});
+
+/* ------------------------------------------- WHAT THE AUDIT FOUND, 28 AUG -- */
+
+/**
+ * Four independent audits went through this file tool by tool. Everything below is a
+ * defect they found and this suite did not — which is the more useful half of an audit.
+ * The pattern in every case was the same: an executor that takes `scope` and never reads
+ * it. The rule was in the header comment and in the docs; nothing enforced it.
+ */
+describe("tools that used to ignore their scope", () => {
+  const otherClient = clients.find((c) => c.agentId !== SOPHIA)!;
+  const otherTx = transactions.find((t) => t.agentId !== SOPHIA)!;
+
+  it("add_note cannot write onto another agent's client or file", () => {
+    const scope = scopeFor(agentCaller);
+    const onClient = TOOL_BY_NAME.get("add_note")!.run(
+      { target: "client", id: otherClient.id, body: "x" }, scope,
+    ) as { refused?: boolean };
+    expect(onClient.refused, "tier 2 wrote a note onto another agent's client").toBe(true);
+
+    const onTx = TOOL_BY_NAME.get("add_note")!.run(
+      { target: "transaction", id: otherTx.id, body: "x" }, scope,
+    ) as { refused?: boolean };
+    expect(onTx.refused).toBe(true);
+  });
+
+  it("add_note still works on the caller's own records", () => {
+    const mine = clients.find((c) => c.agentId === SOPHIA)!;
+    const out = TOOL_BY_NAME.get("add_note")!.run(
+      { target: "client", id: mine.id, body: "x" }, scopeFor(agentCaller),
+    );
+    expect(isWriteIntent(out), "the fix must not break the legitimate case").toBe(true);
+  });
+
+  it("schedule_showing cannot name another agent's client", () => {
+    const out = TOOL_BY_NAME.get("schedule_showing")!.run(
+      { clientId: otherClient.id, listingId: "ls_1", date: "2026-09-01" }, scopeFor(agentCaller),
+    ) as { refused?: boolean };
+    expect(out.refused).toBe(true);
+  });
+
+  it("book_tour is not an address oracle for listings a visitor cannot see", () => {
+    const hidden = listings.find((l) => !["active", "coming_soon", "under_contract"].includes(l.status));
+    if (!hidden) return;
+    const scope = scopeFor(publicCaller);
+    // get_listing already refuses it...
+    const direct = TOOL_BY_NAME.get("get_listing")!.run({ id: hidden.id }, scope) as { found: boolean };
+    expect(direct.found).toBe(false);
+    // ...so book_tour must not put the same row's address in the confirmation summary.
+    const out = TOOL_BY_NAME.get("book_tour")!.run(
+      { listingId: hidden.id, name: "Probe", email: "p@x.com", preferredDate: "2026-09-01" }, scope,
+    );
+    expect(json(out)).not.toContain(hidden.address);
+  });
+
+  it("get_agent_profile hides the same agents list_agents hides from a visitor", () => {
+    const inactive = agents.find((a) => a.status !== "active");
+    if (!inactive) return;
+    const scope = scopeFor(publicCaller);
+
+    const listed = TOOL_BY_NAME.get("list_agents")!.run({}, scope) as { results: { id: string }[] };
+    expect(listed.results.map((r) => r.id)).not.toContain(inactive.id);
+
+    const byId = TOOL_BY_NAME.get("get_agent_profile")!.run({ id: inactive.id }, scope) as { found: boolean };
+    expect(byId.found, "a visitor read an offboarding agent's profile by id").toBe(false);
+  });
+});
+
+describe("tier 3 is narrowed by role for every tool it holds", () => {
+  it("every operator tool maps to a permission", () => {
+    // `allowTool` only checks a permission when TOOL_PERMISSION has an entry, so a tool
+    // missing from the map is open to all five staff roles. Four were missing, including
+    // export_dataset — whose description is "Data leaves the system".
+    const unmapped = AGENTS.operator.tools.filter((t) => !(t in TOOL_PERMISSION));
+    expect(unmapped, `unmapped tier-3 tools are open to every staff role: ${unmapped.join(", ")}`).toEqual([]);
+  });
+
+  it("HR cannot export a dataset it cannot read", () => {
+    expect(allowTool(hrCaller, "search_clients").allowed).toBe(false);
+    expect(allowTool(hrCaller, "export_dataset").allowed, "HR could export what it cannot read").toBe(false);
+  });
+
+  it("a coordinator cannot export either", () => {
+    expect(allowTool(coordinatorCaller, "export_dataset").allowed).toBe(false);
+  });
+});
+
+describe("NYC public records: correctness, not just permissions", () => {
+  it("does not invent air rights on a lot whose built area PLUTO does not record", () => {
+    // builtFar 0 with no building area means "not recorded", not "vacant". Reporting the
+    // whole envelope as available is worse than reporting nothing.
+    expect(unusedFloorArea({ residentialFar: 4, builtFar: 0, lotAreaSqFt: 2500, buildingAreaSqFt: null } as never)).toBeNull();
+    // A genuinely vacant lot does carry a building area, so it still computes.
+    expect(unusedFloorArea({ residentialFar: 4, builtFar: 0, lotAreaSqFt: 2500, buildingAreaSqFt: 1 } as never)).toBe(10000);
+  });
+
+  it("says nothing rather than something wrong when the zoning figure is missing", () => {
+    expect(unusedFloorArea({ residentialFar: 0, builtFar: 2, lotAreaSqFt: 10000, buildingAreaSqFt: 20000 } as never)).toBeNull();
+  });
+
+  it("still computes the ordinary case", () => {
+    expect(unusedFloorArea({ residentialFar: 2, builtFar: 1.1, lotAreaSqFt: 2000, buildingAreaSqFt: 2200 } as never)).toBe(1800);
+    expect(unusedFloorArea({ residentialFar: 1, builtFar: 4, lotAreaSqFt: 2000, buildingAreaSqFt: 8000 } as never)).toBe(0);
+  });
+});
+
+describe("approve_disbursement refuses more than bad arithmetic", () => {
+  const acct = { agentId: "operator" as const, role: "accounting" as const, bookAgentId: null, userId: "u", sessionId: "t" };
+  const run = (args: Record<string, unknown>) =>
+    TOOL_BY_NAME.get("approve_disbursement")!.run(args, scopeFor(acct)) as { refused?: boolean; reason?: string };
+
+  it("refuses a payout that has already been paid", () => {
+    const paid = allPayouts.find((p) => p.status === "paid")!;
+    const out = run({ references: paid.reference, confirmedTotal: paid.netPayout });
+    expect(out.refused, "a paid row could be released again").toBe(true);
+    expect(String(out.reason)).toMatch(/pay twice/i);
+  });
+
+  it("refuses a payout whose deal has not closed", () => {
+    const open = allPayouts.find((p) => {
+      const tx = transactions.find((t) => t.id === p.transactionId);
+      return p.status === "pending" && tx && tx.stage !== "closed";
+    });
+    if (!open) return;
+    const out = run({ references: open.reference, confirmedTotal: open.netPayout });
+    expect(out.refused, "funds could be released before closing").toBe(true);
+  });
+
+  it("still refuses the row that does not reconcile", () => {
+    const out = run({ references: "DISB-1046", confirmedTotal: 0 });
+    expect(out.refused).toBe(true);
+    expect(String(out.reason)).toMatch(/do not reconcile/i);
   });
 });

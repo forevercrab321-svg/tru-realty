@@ -1,4 +1,5 @@
 "use client";
+import type { Permission } from "@/types";
 import * as React from "react";
 import { useRouter } from "next/navigation";
 import { Command } from "cmdk";
@@ -15,16 +16,24 @@ import { compactUsd } from "@/lib/format";
 
 export function CommandMenu({ open, onOpenChange }: { open: boolean; onOpenChange: (v: boolean) => void }) {
   const router = useRouter();
-  const { account } = useSession();
+  const { account, hasPermission } = useSession();
   const store = useStore();
   const base = account?.portal === "agent" ? "/agent" : "/admin";
   const isAgent = account?.portal === "agent";
 
   const go = React.useCallback((href: string) => { onOpenChange(false); router.push(href); }, [router, onOpenChange]);
 
-  const myTx = isAgent ? store.transactions.filter((t) => t.agentId === account?.agentId) : store.transactions;
-  const myClients = isAgent ? store.clients.filter((c) => c.agentId === account?.agentId) : store.clients;
-  const myListings = isAgent ? store.listings.filter((l) => l.listingAgentId === account?.agentId) : store.listings;
+  // The palette is mounted in AppShell, which sits OUTSIDE the route guard, so it has to
+  // apply the same permissions itself. It used to discriminate on portal alone: HR, who is
+  // correctly refused /admin/clients, could press Cmd-K and read all 28 client names,
+  // emails and target areas without navigating anywhere.
+  const canSee = (p: Permission) => (isAgent ? true : hasPermission(p));
+  const mine = <T extends { agentId?: string; listingAgentId?: string }>(rows: T[], key: "agentId" | "listingAgentId") =>
+    isAgent ? rows.filter((r) => r[key] === account?.agentId) : rows;
+
+  const myTx = canSee("transactions.view") ? mine(store.transactions, "agentId") : [];
+  const myClients = canSee("clients.view") ? mine(store.clients, "agentId") : [];
+  const myListings = canSee("listings.view") ? mine(store.listings, "listingAgentId") : [];
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -46,19 +55,19 @@ export function CommandMenu({ open, onOpenChange }: { open: boolean; onOpenChang
 
             <Group heading="Jump to">
               <Item onSelect={() => go(`${base}/dashboard`)} icon={<LayoutDashboard />}>Dashboard</Item>
-              <Item onSelect={() => go(`${base}/transactions`)} icon={<FileSignature />}>{isAgent ? "My deals" : "Transactions"}</Item>
-              <Item onSelect={() => go(`${base}/clients`)} icon={<Contact />}>Clients</Item>
-              <Item onSelect={() => go(`${base}/listings`)} icon={<Building2 />}>Listings</Item>
-              <Item onSelect={() => go(`${base}/events`)} icon={<CalendarDays />}>Events</Item>
-              <Item onSelect={() => go(`${base}/library`)} icon={<BookMarked />}>Library</Item>
+              {canSee("transactions.view") && <Item onSelect={() => go(`${base}/transactions`)} icon={<FileSignature />}>{isAgent ? "My deals" : "Transactions"}</Item>}
+              {canSee("clients.view") && <Item onSelect={() => go(`${base}/clients`)} icon={<Contact />}>Clients</Item>}
+              {canSee("listings.view") && <Item onSelect={() => go(`${base}/listings`)} icon={<Building2 />}>Listings</Item>}
+              {canSee("events.view") && <Item onSelect={() => go(`${base}/events`)} icon={<CalendarDays />}>Events</Item>}
+              {canSee("library.view") && <Item onSelect={() => go(`${base}/library`)} icon={<BookMarked />}>Library</Item>}
               {isAgent
                 ? <>
                     <Item onSelect={() => go("/agent/projects")} icon={<Blocks />}>Project signing</Item>
                     <Item onSelect={() => go("/agent/commission")} icon={<Banknote />}>My commission</Item>
                   </>
                 : <>
-                    <Item onSelect={() => go("/admin/agents")} icon={<Users />}>Agents &amp; HR</Item>
-                    <Item onSelect={() => go("/admin/payouts")} icon={<Banknote />}>Payouts &amp; 1099s</Item>
+                    {hasPermission("agents.view") && <Item onSelect={() => go("/admin/agents")} icon={<Users />}>Agents &amp; HR</Item>}
+                    {hasPermission("payouts.view") && <Item onSelect={() => go("/admin/payouts")} icon={<Banknote />}>Payouts &amp; 1099s</Item>}
                   </>}
             </Group>
 

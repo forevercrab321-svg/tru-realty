@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import { ADMIN_NAV, AGENT_NAV, UNLISTED_ROUTES, portalRoutes, routeAccess, firstAllowedRoute, type Portal } from "./nav";
 import { ROLES, can } from "./permissions";
 import { DEMO_ACCOUNTS } from "./session";
+import { ownsRecord } from "./record-access";
 import type { Permission } from "@/types";
 
 /**
@@ -151,5 +152,45 @@ describe("the deployment prefix cannot lock everyone out", () => {
 
   it("does not mistake a lookalike segment for the portal", () => {
     expect(routeAccess("admin", "/x/administrator/payouts").kind).toBe("unregistered");
+  });
+});
+
+/* ---------------------------------------- OWNERSHIP, NOT JUST ROUTE TYPE -- */
+
+/**
+ * The route guard answers "may this role open this kind of page". It cannot answer "may
+ * this person open THIS record" — and nothing did. The agent portal's list pages filtered
+ * to the signed-in agent's book while the detail pages behind them rendered from the whole
+ * table, so every client, deal and listing in the brokerage was one URL away from every
+ * agent, including a colleague's plan, cap and net payout through the commission panel.
+ */
+describe("record ownership in the agent portal", () => {
+  const sophia = { portal: "agent" as const, agentId: "ag_schen" };
+  const caleb = { portal: "agent" as const, agentId: "ag_cwhite" };
+  const staff = { portal: "admin" as const, agentId: undefined };
+
+  it("an agent cannot open a record belonging to someone else", () => {
+    expect(ownsRecord(caleb, "/agent", ["ag_schen"])).toBe(false);
+    expect(ownsRecord(sophia, "/agent", ["ag_schen"])).toBe(true);
+  });
+
+  it("a co-agent counts as an owner", () => {
+    expect(ownsRecord(caleb, "/agent", ["ag_schen", "ag_cwhite"])).toBe(true);
+  });
+
+  it("a session with no agent id is refused, not unrestricted", () => {
+    expect(ownsRecord({ portal: "agent", agentId: undefined }, "/agent", ["ag_schen"])).toBe(false);
+    expect(ownsRecord(null, "/agent", ["ag_schen"])).toBe(false);
+  });
+
+  it("the back office is bounded by permissions, not by ownership", () => {
+    // A coordinator is supposed to open any file. Their bound is the route guard.
+    expect(ownsRecord(staff, "/admin", ["ag_schen"])).toBe(true);
+    expect(ownsRecord(null, "/admin", ["ag_schen"])).toBe(true);
+  });
+
+  it("an undefined or null owner never matches", () => {
+    expect(ownsRecord(sophia, "/agent", [null])).toBe(false);
+    expect(ownsRecord(sophia, "/agent", [undefined])).toBe(false);
   });
 });

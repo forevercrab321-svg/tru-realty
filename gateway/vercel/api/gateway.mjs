@@ -377,6 +377,14 @@ var TOOL_PERMISSION = {
   cap_audit: "commission.view",
   file_health: "transactions.view",
   commission_breakdown: "commission.view",
+  // Four tools used to be absent from this map, and `allowTool` only checks a permission
+  // when the map has an entry — so an unmapped tool was open to every staff role. The worst
+  // of them was `export_dataset`, whose own description is "Data leaves the system": HR,
+  // who cannot read a single client row, could request a client export.
+  export_dataset: "company.settings",
+  data_integrity_check: "performance.view",
+  library_search: "library.view",
+  list_events: "events.view",
   // City records are public, but reading them under the brokerage's name is still work:
   // gate them on the same permission as looking at a listing, and ownership on clients.
   property_records: "listings.view",
@@ -1150,7 +1158,7 @@ function computeCommission(input) {
   const agentSplitPct = plan?.agentSplit ?? 70;
   const remainingCap = Math.max(0, (plan?.cap ?? 0) - (plan?.capYtd ?? 0));
   const rawBrokerageSplit = Math.round(afterReferral * ((100 - agentSplitPct) / 100));
-  const brokerageSplit = Math.min(rawBrokerageSplit, remainingCap || rawBrokerageSplit);
+  const brokerageSplit = Math.min(rawBrokerageSplit, remainingCap);
   const team = teamById(agent?.teamId ?? null);
   const isLead = team?.leadAgentId === input.agentId;
   const teamSplit = team && !isLead ? Math.round((afterReferral - brokerageSplit) * (team.splitToTeam / 100)) : 0;
@@ -2889,19 +2897,25 @@ var payouts = closed.map((t, i) => ({
   issuedAt: i % 4 < 2 ? t.closingDate : null,
   reference: `DISB-${t.ref.split("-")[2]}`
 }));
+var PLANTED_VARIANCE = { reference: "DISB-1046", amount: 3836 };
 var pendingPayouts = transactions.filter((t) => t.stage === "closing" || t.stage === "final_walkthrough").map((t) => ({
   id: `po_p_${t.id}`,
   agentId: t.agentId,
   transactionId: t.id,
   period: t.closingDate.slice(0, 7),
   grossCommission: t.commission.sideCommission,
-  deductions: t.commission.brokerageSplit + t.commission.transactionFee + t.commission.companyFee,
+  // This branch used to omit teamSplit and referralFee, which the closed branch above
+  // includes — so gross minus deductions did not equal the net on the same row, visibly,
+  // on the payouts screen. The seed deliberately keeps one row that does not reconcile
+  // (see PLANTED_VARIANCE below) so the verify tools have something real to catch; that
+  // is demo data, not arithmetic that disagrees with itself.
+  deductions: t.commission.brokerageSplit + t.commission.transactionFee + t.commission.companyFee + t.commission.teamSplit + t.commission.referralFee,
   netPayout: t.commission.netAgent,
   method: "ACH",
   status: "pending",
   issuedAt: null,
   reference: `DISB-${t.ref.split("-")[2]}`
-}));
+})).map((p) => p.reference === PLANTED_VARIANCE.reference ? { ...p, netPayout: p.netPayout - PLANTED_VARIANCE.amount } : p);
 var allPayouts = [...payouts, ...pendingPayouts];
 var taxRecords = agents.map((a, i) => {
   const mine = allPayouts.filter((p) => p.agentId === a.id);
@@ -3385,14 +3399,25 @@ async function findLots(address, borough, limit = 5) {
     $limit: String(limit)
   });
   if (!second.ok) return second;
-  return { ok: true, data: second.data.map(toLotFacts) };
+  const wanted = `${parsed.number} ${parsed.street}`;
+  const plausible = second.data.filter((r) => {
+    const addr = (r.address ?? "").toUpperCase();
+    return addr.startsWith(wanted) || addr === `${parsed.number} ${head}`;
+  });
+  return { ok: true, data: plausible.map(toLotFacts) };
 }
 var iso = (v) => v ? v.slice(0, 10) : null;
 async function recordedDocuments(borough, block, lot, limit = 40) {
   const acrisBorough = BOROUGHS[borough].acris;
   const legals = await query(DATASET.acrisLegals, {
-    $select: "document_id",
+    $select: "document_id,good_through_date",
     $where: `borough = ${sq(acrisBorough)} AND block = ${sq(block)} AND lot = ${sq(lot)}`,
+    // Newest first. Without an $order Socrata returns rows in its own order — roughly
+    // oldest first — so on a building with hundreds of recorded documents (any condo, any
+    // pre-war co-op) the "most recent deed" was the newest of the OLDEST few hundred. A
+    // 1987 deed was being reported as the last sale, and 1980s mortgages as current
+    // encumbrances, with no caveat.
+    $order: "good_through_date DESC",
     $limit: String(limit * 3)
   });
   if (!legals.ok) return legals;
@@ -3401,6 +3426,7 @@ async function recordedDocuments(borough, block, lot, limit = 40) {
   const master = await query(DATASET.acrisMaster, {
     $select: "document_id,doc_type,document_date,document_amt,recorded_datetime",
     $where: `document_id in (${ids.map(sq).join(",")})`,
+    $order: "recorded_datetime DESC",
     $limit: String(ids.length)
   });
   if (!master.ok) return master;
@@ -3433,6 +3459,8 @@ async function documentParties(documentId) {
 }
 function unusedFloorArea(lot) {
   if (lot.residentialFar === null || lot.builtFar === null || lot.lotAreaSqFt === null) return null;
+  if (lot.builtFar === 0 && lot.buildingAreaSqFt === null) return null;
+  if (lot.residentialFar === 0) return null;
   const gap = lot.residentialFar - lot.builtFar;
   if (gap <= 0) return 0;
   return Math.round(gap * lot.lotAreaSqFt);
@@ -3659,7 +3687,8 @@ var TOOLS = [
     parameters: { type: "object", properties: { id: { type: "string", description: "Agent id." } }, required: ["id"] },
     run: (a, scope) => {
       const ag = visibleAgents(scope).find((x) => x.id === str(a.id));
-      return ag ? { found: true, ...publicAgent(ag) } : { found: false };
+      if (!ag || scope.tier === 1 && ag.status !== "active") return { found: false };
+      return { found: true, ...publicAgent(ag) };
     }
   },
   {
@@ -4021,20 +4050,29 @@ var TOOLS = [
     description: "Whether company dollar collected agrees with each agent's cap and year-to-date. Flags any agent charged past their cap.",
     parameters: { type: "object", properties: {} },
     run: () => {
-      const rows7 = agents.filter((a) => a.status === "active").map((a) => {
-        const collected = transactions.filter((t) => t.agentId === a.id && t.stage === "closed").reduce((s, t) => s + (t.commission?.brokerageSplit ?? 0), 0);
+      const rows7 = agents.map((a) => {
+        const collected = transactions.filter((t) => (t.agentId === a.id || t.coAgentId === a.id) && t.stage === "closed").reduce((s, t) => s + (t.commission?.brokerageSplit ?? 0), 0);
+        const chargedTotal = a.plan.capYtd + collected;
         return {
           agentId: a.id,
           name: a.name,
+          status: a.status,
           plan: a.plan.name,
           cap: a.plan.cap,
           capYtdOnRecord: a.plan.capYtd,
           companyDollarCollected: collected,
-          overCap: Math.max(0, collected - a.plan.cap)
+          totalChargedAgainstCap: chargedTotal,
+          overCap: Math.max(0, chargedTotal - a.plan.cap)
         };
       });
       const over = rows7.filter((r) => r.overCap > 0);
-      return { agents: rows7.length, agentsOverCap: over.length, totalOverCollected: over.reduce((s, r) => s + r.overCap, 0), detail: over.length ? over : rows7.slice(0, 8) };
+      return {
+        agents: rows7.length,
+        agentsOverCap: over.length,
+        totalOverCollected: over.reduce((s, r) => s + r.overCap, 0),
+        detail: over.length ? over : rows7.slice(0, 8),
+        caution: "capYtd is a stored figure that nothing in the product currently updates, so this compares it against closed-deal company dollar rather than against a ledger. Treat an over-cap flag as a question to ask, not a settled amount to refund."
+      };
     }
   },
   {
@@ -4311,7 +4349,7 @@ var TOOLS = [
       required: ["listingId", "name", "email", "preferredDate"]
     },
     run: (a, scope) => {
-      const l = listings.find((x) => x.id === str(a.listingId));
+      const l = visibleListings(scope).find((x) => x.id === str(a.listingId));
       return intent("book_tour", a, `Tour request for ${l?.address ?? str(a.listingId)} on ${str(a.preferredDate)} ${str(a.preferredTime)} for ${str(a.name)}.`, scope);
     }
   },
@@ -4371,7 +4409,13 @@ var TOOLS = [
       },
       required: ["target", "id", "body"]
     },
-    run: (a, scope) => intent("add_note", a, `Add a note to ${str(a.target)} ${str(a.id)}.`, scope)
+    run: (a, scope) => {
+      const id = str(a.id);
+      const target = str(a.target);
+      const exists = target === "transaction" ? visibleTransactions(scope).some((t) => t.id === id || t.ref === id) : visibleClients(scope).some((c) => c.id === id);
+      if (!exists) return { refused: true, reason: `No ${target || "record"} you can access matches ${id}.` };
+      return intent("add_note", a, `Add a note to ${target} ${id}.`, scope);
+    }
   },
   {
     name: "create_client",
@@ -4459,7 +4503,13 @@ var TOOLS = [
       },
       required: ["clientId", "listingId", "date"]
     },
-    run: (a, scope) => intent("schedule_showing", a, `Schedule a showing on ${str(a.date)} ${str(a.time)}.`, scope)
+    run: (a, scope) => {
+      const clientId = str(a.clientId);
+      if (!visibleClients(scope).some((c) => c.id === clientId)) {
+        return { refused: true, reason: `No client you can access matches ${clientId}.` };
+      }
+      return intent("schedule_showing", a, `Schedule a showing on ${str(a.date)} ${str(a.time)}.`, scope);
+    }
   },
   {
     name: "draft_message",
@@ -4618,6 +4668,21 @@ var TOOLS = [
       const bad = rows7.filter((p) => p.grossCommission - p.deductions !== p.netPayout);
       if (bad.length) {
         return { refused: true, reason: `${bad.length} row(s) do not reconcile: ${bad.map((b) => b.reference).join(", ")}. Do not release this run.` };
+      }
+      const alreadyOut = rows7.filter((p) => p.status === "paid" || p.status === "on_hold");
+      if (alreadyOut.length) {
+        return { refused: true, reason: `${alreadyOut.map((r) => `${r.reference} is ${r.status}`).join("; ")}. Releasing it again would pay twice. Do not release this run.` };
+      }
+      const notClosed = rows7.filter((p) => {
+        const tx = transactions.find((t) => t.id === p.transactionId);
+        return !tx || tx.stage !== "closed";
+      });
+      if (notClosed.length) {
+        return { refused: true, reason: `${notClosed.map((r) => r.reference).join(", ")} belong to deals that have not closed. Funds cannot be released before closing.` };
+      }
+      const nonPositive = rows7.filter((p) => p.netPayout <= 0);
+      if (nonPositive.length) {
+        return { refused: true, reason: `${nonPositive.map((r) => `${r.reference} nets ${r.netPayout}`).join("; ")}. A payout of zero or less has to be resolved by hand, not released.` };
       }
       const total = rows7.reduce((s, p) => s + p.netPayout, 0);
       if (num2(a.confirmedTotal) !== total) {
@@ -4826,11 +4891,20 @@ async function verifySession(req, env2) {
     false,
     ["verify"]
   );
-  const ok = await crypto.subtle.verify("HMAC", key, b64urlToBytes(sig), new TextEncoder().encode(payload));
+  let ok = false;
+  try {
+    ok = await crypto.subtle.verify("HMAC", key, b64urlToBytes(sig), new TextEncoder().encode(payload));
+  } catch {
+    return null;
+  }
   if (!ok) return null;
   try {
     const claims = JSON.parse(new TextDecoder().decode(b64urlToBytes(payload)));
+    if (typeof claims.exp !== "number" || !Number.isFinite(claims.exp)) return null;
     if (claims.exp * 1e3 < Date.now()) return null;
+    if (typeof claims.userId !== "string" || !claims.userId) return null;
+    if (claims.role !== null && typeof claims.role !== "string") return null;
+    if (claims.agentId != null && typeof claims.agentId !== "string") return null;
     return claims;
   } catch {
     return null;
@@ -4917,9 +4991,63 @@ async function callKimi(env2, model, temperature, maxTokens, messages, tools) {
   }
   return await res.json();
 }
+function clientIp(req) {
+  const xff = req.headers.get("x-forwarded-for");
+  if (xff) {
+    const hops = xff.split(",").map((h) => h.trim()).filter(Boolean);
+    if (hops.length) return hops[hops.length - 1];
+  }
+  return req.headers.get("x-real-ip") ?? req.headers.get("CF-Connecting-IP") ?? "unknown";
+}
+var ASSISTANT_IDS = Object.keys(AGENTS);
+var BODY_LIMITS = {
+  maxMessages: 40,
+  maxMessageChars: 8e3,
+  maxTotalChars: 6e4
+};
+function validateChatBody(raw) {
+  if (typeof raw !== "object" || raw === null) return { error: "Body must be an object." };
+  const b = raw;
+  if (typeof b.assistant !== "string") return { error: "assistant must be a string." };
+  if (typeof b.input !== "string") return { error: "input must be a string." };
+  const messages = b.messages === void 0 ? [] : b.messages;
+  if (!Array.isArray(messages)) return { error: "messages must be an array." };
+  if (messages.length > BODY_LIMITS.maxMessages) {
+    return { error: `Too many messages (max ${BODY_LIMITS.maxMessages}).` };
+  }
+  let total = b.input.length;
+  const clean = [];
+  for (const m of messages) {
+    if (typeof m !== "object" || m === null) return { error: "Each message must be an object." };
+    const { role, content } = m;
+    if (role !== "user" && role !== "assistant") {
+      return { error: "Each message role must be 'user' or 'assistant'." };
+    }
+    if (typeof content !== "string") return { error: "Each message content must be a string." };
+    if (content.length > BODY_LIMITS.maxMessageChars) {
+      return { error: `A message exceeds ${BODY_LIMITS.maxMessageChars} characters.` };
+    }
+    total += content.length;
+    if (total > BODY_LIMITS.maxTotalChars) {
+      return { error: `Conversation exceeds ${BODY_LIMITS.maxTotalChars} characters. Start a new one.` };
+    }
+    clean.push({ role, content });
+  }
+  return { assistant: b.assistant, messages: clean, input: b.input };
+}
+var HEALTH_TTL_MS = 12e4;
+var healthCache = null;
+var healthResponse = (report) => new Response(JSON.stringify(report, null, 2), {
+  status: 200,
+  headers: { "Content-Type": "application/json", "Cache-Control": "no-store" }
+});
 async function handle(req, env2) {
   setNycAppToken(env2.NYC_APP_TOKEN);
   if (new URL(req.url).pathname === "/health") {
+    const cached = healthCache;
+    if (cached && Date.now() - cached.at < HEALTH_TTL_MS) {
+      return healthResponse({ ...cached.report, cached: true, ageSeconds: Math.round((Date.now() - cached.at) / 1e3) });
+    }
     const base = kimiBase(env2);
     const report = {
       worker: "ok",
@@ -5005,10 +5133,8 @@ async function handle(req, env2) {
         report.verdict = "Rejected everywhere with a real API error. Either the key is wrong, or the account behind it has no active subscription and no balance.";
       }
     }
-    return new Response(JSON.stringify(report, null, 2), {
-      status: 200,
-      headers: { "Content-Type": "application/json", "Cache-Control": "no-store" }
-    });
+    healthCache = { at: Date.now(), report };
+    return healthResponse(report);
   }
   const headers = cors(req, env2);
   if (!headers) return new Response("Origin not allowed", { status: 403 });
@@ -5034,9 +5160,18 @@ async function handle(req, env2) {
     });
   }
   if (url.pathname !== "/chat") return new Response("Not found", { status: 404, headers });
-  const body = await req.json();
+  let raw;
+  try {
+    raw = await req.json();
+  } catch {
+    return json({ error: "Body must be JSON." }, 400, headers);
+  }
+  const body = validateChatBody(raw);
+  if ("error" in body) return json({ error: body.error }, 400, headers);
   const def = AGENTS[body.assistant];
-  if (!def) return json({ error: "Unknown assistant" }, 400, headers);
+  if (!def || !ASSISTANT_IDS.includes(body.assistant)) {
+    return json({ error: "Unknown assistant" }, 400, headers);
+  }
   const claims = await verifySession(req, env2);
   if (def.roles !== null) {
     if (!claims) return json({ error: "Sign in required." }, 401, headers);
@@ -5049,7 +5184,7 @@ async function handle(req, env2) {
     role: claims?.role ?? null,
     bookAgentId: claims?.agentId ?? null,
     userId: claims?.userId ?? null,
-    sessionId: claims?.userId ?? `anon:${req.headers.get("CF-Connecting-IP") ?? "?"}`
+    sessionId: claims?.userId ?? `anon:${clientIp(req)}`
   };
   const limits = LIMITS[def.id];
   if (body.input.length > limits.maxInputChars) {
@@ -5068,12 +5203,15 @@ async function handle(req, env2) {
   const tools = toolSchemasFor(def.tools);
   const steps = [];
   let pending = void 0;
+  let executions = 0;
   for (let round = 0; round < limits.toolCallsPerTurn; round++) {
     let completion;
     try {
       completion = await callKimi(env2, env2.KIMI_MODEL || def.model.name, def.model.temperature, def.model.maxTokens, messages, tools);
     } catch (err) {
-      return json({ error: "The assistant service is unavailable.", detail: String(err).slice(0, 200) }, 502, headers);
+      console.error("kimi call failed:", String(err).slice(0, 500));
+      await flush(env2, audit);
+      return json({ error: "The assistant service is unavailable." }, 502, headers);
     }
     const choice = completion.choices[0];
     const calls = choice.message.tool_calls ?? [];
@@ -5082,7 +5220,13 @@ async function handle(req, env2) {
       return json({ content: choice.message.content ?? "", steps, pending }, 200, headers);
     }
     messages.push(choice.message);
-    for (const call of calls) {
+    const maxExecutions = limits.toolCallsPerTurn * 4;
+    if (executions >= maxExecutions) {
+      steps.push({ tool: "(budget)", kind: "refused", ok: false, note: "Tool budget for this turn is spent." });
+      break;
+    }
+    for (const call of calls.slice(0, maxExecutions - executions)) {
+      executions++;
       const name = call.function.name;
       let args = {};
       try {
@@ -5110,7 +5254,13 @@ async function handle(req, env2) {
         continue;
       }
       if (isWriteIntent(result)) {
-        pending = result;
+        const safe = redactFor(def.id, result);
+        if (pending) {
+          steps.push({ tool: name, kind: "refused", ok: false, note: "Only one change can be confirmed at a time." });
+          messages.push({ role: "tool", tool_call_id: call.id, content: JSON.stringify({ refused: true, reason: "A change is already awaiting confirmation. Ask for one at a time." }) });
+          continue;
+        }
+        pending = safe;
         audit.push(auditEntry(caller, name, args, "confirmed", result.summary));
         steps.push({ tool: name, kind: "operate", ok: true });
         messages.push({ role: "tool", tool_call_id: call.id, content: JSON.stringify({ awaitingConfirmation: true, summary: result.summary }) });

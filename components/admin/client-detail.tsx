@@ -18,6 +18,8 @@ import { NewTransactionDialog } from "@/components/admin/create-dialogs";
 import { PropertyCard } from "@/components/public/cards";
 import { useStore } from "@/lib/store";
 import { useSession } from "@/lib/session";
+import { ownsRecord } from "@/lib/record-access";
+import { NoAccess } from "@/components/shared/no-access";
 import { agentName } from "@/data/agents";
 import { userName } from "@/data/company";
 import { compactUsd, dateMed, relative, titleCase, usd } from "@/lib/format";
@@ -32,6 +34,16 @@ export function ClientDetail({ id, base }: { id: string; base: string }) {
   const [noteType, setNoteType] = React.useState("note");
 
   if (!client) return notFound();
+  if (!ownsRecord(account, base, [client.agentId])) {
+    return (
+      <NoAccess
+        role={account?.role ?? "agent"}
+        backHref={`${base}/clients`}
+        backLabel="Back to your clients"
+      />
+    );
+  }
+
 
   const myTx = transactions.filter((t) => t.clientId === client.id);
   const matches = listings

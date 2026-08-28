@@ -358,6 +358,14 @@ export const TOOL_PERMISSION: Record<string, Permission> = {
   cap_audit: "commission.view",
   file_health: "transactions.view",
   commission_breakdown: "commission.view",
+  // Four tools used to be absent from this map, and `allowTool` only checks a permission
+  // when the map has an entry — so an unmapped tool was open to every staff role. The worst
+  // of them was `export_dataset`, whose own description is "Data leaves the system": HR,
+  // who cannot read a single client row, could request a client export.
+  export_dataset: "company.settings",
+  data_integrity_check: "performance.view",
+  library_search: "library.view",
+  list_events: "events.view",
   // City records are public, but reading them under the brokerage's name is still work:
   // gate them on the same permission as looking at a listing, and ownership on clients.
   property_records: "listings.view",

@@ -280,7 +280,12 @@ export const TOOLS: ToolDef[] = [
     parameters: { type: "object", properties: { id: { type: "string", description: "Agent id." } }, required: ["id"] },
     run: (a, scope) => {
       const ag = visibleAgents(scope).find((x) => x.id === str(a.id));
-      return ag ? { found: true, ...publicAgent(ag) } : { found: false };
+      // Same filter list_agents applies. Without it a visitor who harvested an id from a
+      // listing could read an agent's bio while they are offboarding or on leave — which
+      // is where those notes say "submitted notice on 12 August" or "on parental leave
+      // through Q4". Staff status is not public information.
+      if (!ag || (scope.tier === 1 && ag.status !== "active")) return { found: false };
+      return { found: true, ...publicAgent(ag) };
     },
   },
 
@@ -604,17 +609,33 @@ export const TOOLS: ToolDef[] = [
     description: "Whether company dollar collected agrees with each agent's cap and year-to-date. Flags any agent charged past their cap.",
     parameters: { type: "object", properties: {} },
     run: () => {
-      const rows = agents.filter((a) => a.status === "active").map((a) => {
+      // Two defects lived here. It compared company dollar from closed deals against `cap`
+      // while ignoring `capYtd` — the figure it prints in the very next column — so an
+      // agent already at cap on record could be charged the whole cap again and the audit
+      // reported zero. And it skipped non-active agents, who are precisely the ones an
+      // offboarding reconciliation is for.
+      const rows = agents.map((a) => {
         const collected = transactions
-          .filter((t) => t.agentId === a.id && t.stage === "closed")
+          .filter((t) => (t.agentId === a.id || t.coAgentId === a.id) && t.stage === "closed")
           .reduce((s, t) => s + (t.commission?.brokerageSplit ?? 0), 0);
+        const chargedTotal = a.plan.capYtd + collected;
         return {
-          agentId: a.id, name: a.name, plan: a.plan.name, cap: a.plan.cap, capYtdOnRecord: a.plan.capYtd,
-          companyDollarCollected: collected, overCap: Math.max(0, collected - a.plan.cap),
+          agentId: a.id, name: a.name, status: a.status, plan: a.plan.name,
+          cap: a.plan.cap, capYtdOnRecord: a.plan.capYtd,
+          companyDollarCollected: collected,
+          totalChargedAgainstCap: chargedTotal,
+          overCap: Math.max(0, chargedTotal - a.plan.cap),
         };
       });
       const over = rows.filter((r) => r.overCap > 0);
-      return { agents: rows.length, agentsOverCap: over.length, totalOverCollected: over.reduce((s, r) => s + r.overCap, 0), detail: over.length ? over : rows.slice(0, 8) };
+      return {
+        agents: rows.length,
+        agentsOverCap: over.length,
+        totalOverCollected: over.reduce((s, r) => s + r.overCap, 0),
+        detail: over.length ? over : rows.slice(0, 8),
+        caution:
+          "capYtd is a stored figure that nothing in the product currently updates, so this compares it against closed-deal company dollar rather than against a ledger. Treat an over-cap flag as a question to ask, not a settled amount to refund.",
+      };
     },
   },
 
@@ -865,7 +886,10 @@ export const TOOLS: ToolDef[] = [
       required: ["listingId", "name", "email", "preferredDate"],
     },
     run: (a, scope) => {
-      const l = listings.find((x) => x.id === str(a.listingId));
+      // visibleListings, not listings. Looking it up in the raw table made this an address
+      // oracle: get_listing correctly refused a sold or withdrawn row, and then book_tour
+      // put that row's address into the confirmation summary for the same visitor.
+      const l = visibleListings(scope).find((x) => x.id === str(a.listingId));
       return intent("book_tour", a, `Tour request for ${l?.address ?? str(a.listingId)} on ${str(a.preferredDate)} ${str(a.preferredTime)} for ${str(a.name)}.`, scope);
     },
   },
@@ -929,7 +953,18 @@ export const TOOLS: ToolDef[] = [
       },
       required: ["target", "id", "body"],
     },
-    run: (a, scope) => intent("add_note", a, `Add a note to ${str(a.target)} ${str(a.id)}.`, scope),
+    run: (a, scope) => {
+      // This used to ignore its scope entirely, which made it the one place a tier-2
+      // assistant could write onto a colleague's record — a capability the UI does not
+      // have. Resolve the target through the scoped view before returning an intent.
+      const id = str(a.id);
+      const target = str(a.target);
+      const exists = target === "transaction"
+        ? visibleTransactions(scope).some((t) => t.id === id || t.ref === id)
+        : visibleClients(scope).some((c) => c.id === id);
+      if (!exists) return { refused: true, reason: `No ${target || "record"} you can access matches ${id}.` };
+      return intent("add_note", a, `Add a note to ${target} ${id}.`, scope);
+    },
   },
 
   {
@@ -1022,7 +1057,15 @@ export const TOOLS: ToolDef[] = [
       },
       required: ["clientId", "listingId", "date"],
     },
-    run: (a, scope) => intent("schedule_showing", a, `Schedule a showing on ${str(a.date)} ${str(a.time)}.`, scope),
+    run: (a, scope) => {
+      // Same class as add_note: the client id came from the model and was never checked
+      // against the caller's book.
+      const clientId = str(a.clientId);
+      if (!visibleClients(scope).some((c) => c.id === clientId)) {
+        return { refused: true, reason: `No client you can access matches ${clientId}.` };
+      }
+      return intent("schedule_showing", a, `Schedule a showing on ${str(a.date)} ${str(a.time)}.`, scope);
+    },
   },
 
   {
@@ -1186,6 +1229,27 @@ export const TOOLS: ToolDef[] = [
       if (bad.length) {
         return { refused: true, reason: `${bad.length} row(s) do not reconcile: ${bad.map((b) => b.reference).join(", ")}. Do not release this run.` };
       }
+
+      // Reconciliation was the only check. That let three different ways of paying money
+      // twice or early through: a row already marked paid, a row on hold, and a row whose
+      // deal has not closed. The pending ledger includes deals at closing and final
+      // walkthrough, so "pending" alone does not mean "ready to fund".
+      const alreadyOut = rows.filter((p) => p.status === "paid" || p.status === "on_hold");
+      if (alreadyOut.length) {
+        return { refused: true, reason: `${alreadyOut.map((r) => `${r.reference} is ${r.status}`).join("; ")}. Releasing it again would pay twice. Do not release this run.` };
+      }
+      const notClosed = rows.filter((p) => {
+        const tx = transactions.find((t) => t.id === p.transactionId);
+        return !tx || tx.stage !== "closed";
+      });
+      if (notClosed.length) {
+        return { refused: true, reason: `${notClosed.map((r) => r.reference).join(", ")} belong to deals that have not closed. Funds cannot be released before closing.` };
+      }
+      const nonPositive = rows.filter((p) => p.netPayout <= 0);
+      if (nonPositive.length) {
+        return { refused: true, reason: `${nonPositive.map((r) => `${r.reference} nets ${r.netPayout}`).join("; ")}. A payout of zero or less has to be resolved by hand, not released.` };
+      }
+
       const total = rows.reduce((s, p) => s + p.netPayout, 0);
       if (num(a.confirmedTotal) !== total) {
         return { refused: true, reason: `Confirmed total ${num(a.confirmedTotal)} does not match the run total ${total}. Re-confirm with the correct figure.` };

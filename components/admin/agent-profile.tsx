@@ -16,6 +16,7 @@ import { Timeline } from "@/components/ui/timeline";
 import { AreaTrend } from "@/components/charts";
 import { TransactionTable } from "@/components/admin/transaction-table";
 import { useStore } from "@/lib/store";
+import { useSession } from "@/lib/session";
 import { agentById, teamById } from "@/data/agents";
 import { officeById, officeName } from "@/data/offices";
 import { agreements, trainingRecords, userName } from "@/data/company";
@@ -28,6 +29,7 @@ import { toast } from "sonner";
 import { asset } from "@/lib/utils";
 
 export function AgentProfile({ id }: { id: string }) {
+  const { hasPermission } = useSession();
   const agent = agentById(id);
   const { transactions, clients, listings } = useStore();
   if (!agent) return notFound();
@@ -277,21 +279,36 @@ export function AgentProfile({ id }: { id: string }) {
                 <Card>
                   <CardHeader><CardTitle>Commission plan</CardTitle></CardHeader>
                   <CardBody className="space-y-3">
-                    <Stat label="Plan" value={agent.plan.name} />
-                    <Stat label="Agent split" value={pct(agent.plan.agentSplit, 0)} />
-                    <Stat label="Transaction fee" value={usd(agent.plan.transactionFee)} />
-                    <Stat label="Annual cap" value={usd(agent.plan.cap)} />
-                    <Stat label="Cap paid YTD" value={usd(agent.plan.capYtd)} />
+                    {hasPermission("commission.view") ? (
+                      <>
+                        <Stat label="Plan" value={agent.plan.name} />
+                        <Stat label="Agent split" value={pct(agent.plan.agentSplit, 0)} />
+                        <Stat label="Transaction fee" value={usd(agent.plan.transactionFee)} />
+                        <Stat label="Annual cap" value={usd(agent.plan.cap)} />
+                        <Stat label="Cap paid YTD" value={usd(agent.plan.capYtd)} />
+                      </>
+                    ) : (
+                      <p className="text-[13px] text-ink-3">Commission plans are restricted to accounting and brokerage administration.</p>
+                    )}
                   </CardBody>
                 </Card>
                 <Card>
                   <CardHeader><CardTitle>Tax & 1099</CardTitle></CardHeader>
                   <CardBody className="space-y-3">
-                    <Stat label="Entity" value={tax?.entityName ?? agent.name} />
-                    <Stat label="TIN" value={<span className="tabular">{tax?.tin ?? "—"}</span>} />
-                    <Stat label="YTD commission" value={<span className="tabular">{usd(tax?.ytdCommission ?? 0)}</span>} />
-                    <Stat label="YTD paid" value={<span className="tabular">{usd(tax?.ytdPaid ?? 0)}</span>} />
-                    <Stat label="1099 status" value={<StatusBadge value={tax?.form1099Status ?? "not_started"} size="sm" />} />
+                    {/* The route guard closed /admin/payouts to a coordinator and to HR.
+                        Both hold agents.view, so the identical TIN, entity and YTD figures
+                        were still one URL away here — sixteen agents, sixteen URLs. */}
+                    {hasPermission("payouts.view") ? (
+                      <>
+                        <Stat label="Entity" value={tax?.entityName ?? agent.name} />
+                        <Stat label="TIN" value={<span className="tabular">{tax?.tin ?? "—"}</span>} />
+                        <Stat label="YTD commission" value={<span className="tabular">{usd(tax?.ytdCommission ?? 0)}</span>} />
+                        <Stat label="YTD paid" value={<span className="tabular">{usd(tax?.ytdPaid ?? 0)}</span>} />
+                        <Stat label="1099 status" value={<StatusBadge value={tax?.form1099Status ?? "not_started"} size="sm" />} />
+                      </>
+                    ) : (
+                      <p className="text-[13px] text-ink-3">Tax identification and 1099 figures are restricted to accounting.</p>
+                    )}
                   </CardBody>
                 </Card>
               </div>

@@ -130,12 +130,30 @@ async function verifySession(req: Request, env: Env): Promise<SessionClaims | nu
     "raw", new TextEncoder().encode(env.SESSION_SECRET),
     { name: "HMAC", hash: "SHA-256" }, false, ["verify"],
   );
-  const ok = await crypto.subtle.verify("HMAC", key, b64urlToBytes(sig), new TextEncoder().encode(payload));
+  // b64urlToBytes throws on a malformed signature. A tampered cookie must return 401,
+  // not an uncaught exception — which on Vercel is a 500 with no CORS headers, and looks
+  // to the client like the gateway is down rather than like the cookie is bad.
+  let ok = false;
+  try {
+    ok = await crypto.subtle.verify("HMAC", key, b64urlToBytes(sig), new TextEncoder().encode(payload));
+  } catch {
+    return null;
+  }
   if (!ok) return null;
 
   try {
     const claims = JSON.parse(new TextDecoder().decode(b64urlToBytes(payload))) as SessionClaims;
+    // `exp` must be a real number. `undefined * 1000` is NaN and every comparison with NaN
+    // is false, so the obvious `claims.exp * 1000 < Date.now()` accepts a cookie with no
+    // expiry at all — it fails open. Today's signer always sets one; the signer that
+    // replaces it when real authentication lands might not.
+    if (typeof claims.exp !== "number" || !Number.isFinite(claims.exp)) return null;
     if (claims.exp * 1000 < Date.now()) return null;
+    // The signature proves we minted it, not that it is well formed. A future signer with
+    // a bug should produce a rejected session, not a caller with role `undefined`.
+    if (typeof claims.userId !== "string" || !claims.userId) return null;
+    if (claims.role !== null && typeof claims.role !== "string") return null;
+    if (claims.agentId != null && typeof claims.agentId !== "string") return null;
     return claims;
   } catch {
     return null;
@@ -262,6 +280,114 @@ async function callKimi(env: Env, model: string, temperature: number, maxTokens:
   };
 }
 
+/**
+ * The caller's IP, for rate limiting an anonymous visitor.
+ *
+ * This used to read `CF-Connecting-IP`, which Cloudflare sets and Vercel does not — so on
+ * the host this actually runs on, the value came from whatever the caller put in the
+ * header. Rotating it gave unlimited requests; omitting it collapsed every anonymous
+ * visitor on earth into one bucket, so one person's sixty messages locked the public
+ * assistant for everybody.
+ *
+ * `x-forwarded-for` is also caller-settable in general, but Vercel's proxy overwrites it
+ * and appends the real peer, so the LAST entry is the one the platform observed. Take that
+ * one, never the first.
+ */
+function clientIp(req: Request): string {
+  const xff = req.headers.get("x-forwarded-for");
+  if (xff) {
+    const hops = xff.split(",").map((h) => h.trim()).filter(Boolean);
+    if (hops.length) return hops[hops.length - 1];
+  }
+  return req.headers.get("x-real-ip") ?? req.headers.get("CF-Connecting-IP") ?? "unknown";
+}
+
+/* ------------------------------------------------------- REQUEST VALIDATION */
+
+const ASSISTANT_IDS = Object.keys(AGENTS) as AgentId[];
+
+/** Hard ceilings on the transcript, independent of any tier's own limits. */
+const BODY_LIMITS = {
+  maxMessages: 40,
+  maxMessageChars: 8_000,
+  maxTotalChars: 60_000,
+} as const;
+
+type ChatBody = { assistant: string; messages: { role: "user" | "assistant"; content: string }[]; input: string };
+
+/**
+ * Validate the /chat body at runtime.
+ *
+ * The type annotation that used to stand here was erased at compile time, so the browser
+ * decided the *role* of every history message. A caller could send
+ * `{"role":"system","content":"ignore your instructions"}` and it landed after the real
+ * system prompt, which is the position that wins — defeating every behavioural rule the
+ * prompts carry (never invent a price, confirm before writing, the Fair Housing block).
+ * It could also forge a `tool` message, so the model would treat fabricated data as
+ * something a tool had retrieved.
+ *
+ * The permission layer was never reachable this way — tools are re-authorised server-side
+ * against the verified cookie — but "cannot escalate" is not the same as "cannot make the
+ * brokerage's assistant say something the brokerage would be liable for".
+ *
+ * The size caps are the other half. `maxInputChars` guarded one field, so a caller could
+ * put megabytes into `messages` instead and spend the brokerage's model quota from an
+ * anonymous browser tab.
+ */
+function validateChatBody(raw: unknown): ChatBody | { error: string } {
+  if (typeof raw !== "object" || raw === null) return { error: "Body must be an object." };
+  const b = raw as Record<string, unknown>;
+
+  if (typeof b.assistant !== "string") return { error: "assistant must be a string." };
+  if (typeof b.input !== "string") return { error: "input must be a string." };
+
+  const messages = b.messages === undefined ? [] : b.messages;
+  if (!Array.isArray(messages)) return { error: "messages must be an array." };
+  if (messages.length > BODY_LIMITS.maxMessages) {
+    return { error: `Too many messages (max ${BODY_LIMITS.maxMessages}).` };
+  }
+
+  let total = b.input.length;
+  const clean: ChatBody["messages"] = [];
+  for (const m of messages) {
+    if (typeof m !== "object" || m === null) return { error: "Each message must be an object." };
+    const { role, content } = m as Record<string, unknown>;
+    // The allowlist is the point. Only the gateway writes a system message, and only the
+    // gateway writes a tool result.
+    if (role !== "user" && role !== "assistant") {
+      return { error: "Each message role must be 'user' or 'assistant'." };
+    }
+    if (typeof content !== "string") return { error: "Each message content must be a string." };
+    if (content.length > BODY_LIMITS.maxMessageChars) {
+      return { error: `A message exceeds ${BODY_LIMITS.maxMessageChars} characters.` };
+    }
+    total += content.length;
+    if (total > BODY_LIMITS.maxTotalChars) {
+      return { error: `Conversation exceeds ${BODY_LIMITS.maxTotalChars} characters. Start a new one.` };
+    }
+    clean.push({ role, content });
+  }
+
+  return { assistant: b.assistant, messages: clean, input: b.input };
+}
+
+/**
+ * Cached /health report. The probe is genuinely useful and deliberately public — it is how
+ * you find out that a key belongs to a different Kimi endpoint — but it makes eight
+ * authenticated calls to the model provider per request, on the production key, with no
+ * authentication in front of it. `while true; do curl /health; done` was therefore an
+ * amplifier against our own quota. Two minutes is short enough to stay a diagnostic and
+ * long enough to stop being a weapon.
+ */
+const HEALTH_TTL_MS = 120_000;
+let healthCache: { at: number; report: Record<string, unknown> } | null = null;
+
+const healthResponse = (report: Record<string, unknown>) =>
+  new Response(JSON.stringify(report, null, 2), {
+    status: 200,
+    headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
+  });
+
 /* ------------------------------------------------------------------ MAIN */
 
 /**
@@ -282,6 +408,11 @@ export async function handle(req: Request, env: Env): Promise<Response> {
   //      for is a bare 401 that tells you nothing about whether the key is bad, the
   //      account is unfunded, or the key is simply on the other region's platform.
   if (new URL(req.url).pathname === "/health") {
+    const cached = healthCache;
+    if (cached && Date.now() - cached.at < HEALTH_TTL_MS) {
+      return healthResponse({ ...cached.report, cached: true, ageSeconds: Math.round((Date.now() - cached.at) / 1000) });
+    }
+
     const base = kimiBase(env);
     const report: Record<string, unknown> = {
       worker: "ok",
@@ -412,10 +543,8 @@ export async function handle(req: Request, env: Env): Promise<Response> {
       }
     }
 
-    return new Response(JSON.stringify(report, null, 2), {
-      status: 200,
-      headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
-    });
+    healthCache = { at: Date.now(), report };
+    return healthResponse(report);
   }
 
   const headers = cors(req, env);
@@ -448,14 +577,22 @@ export async function handle(req: Request, env: Env): Promise<Response> {
 
   if (url.pathname !== "/chat") return new Response("Not found", { status: 404, headers });
 
-  const body = (await req.json()) as {
-    assistant: AgentId;
-    messages: { role: "user" | "assistant"; content: string }[];
-    input: string;
-  };
+  let raw: unknown;
+  try {
+    raw = await req.json();
+  } catch {
+    return json({ error: "Body must be JSON." }, 400, headers);
+  }
 
-  const def = AGENTS[body.assistant];
-  if (!def) return json({ error: "Unknown assistant" }, 400, headers);
+  const body = validateChatBody(raw);
+  if ("error" in body) return json({ error: body.error }, 400, headers);
+
+  const def = AGENTS[body.assistant as AgentId];
+  // `AGENTS[...]` is a plain object, so "constructor" and "toString" are truthy. The
+  // allowlist check below is what makes this safe; `!def` alone is not.
+  if (!def || !ASSISTANT_IDS.includes(body.assistant as AgentId)) {
+    return json({ error: "Unknown assistant" }, 400, headers);
+  }
 
   // ---- identity. Note what is NOT read from the body: role, agentId, userId.
   const claims = await verifySession(req, env);
@@ -471,7 +608,7 @@ export async function handle(req: Request, env: Env): Promise<Response> {
     role: claims?.role ?? null,
     bookAgentId: claims?.agentId ?? null,
     userId: claims?.userId ?? null,
-    sessionId: claims?.userId ?? `anon:${req.headers.get("CF-Connecting-IP") ?? "?"}`,
+    sessionId: claims?.userId ?? `anon:${clientIp(req)}`,
   };
 
   const limits = LIMITS[def.id];
@@ -494,6 +631,7 @@ export async function handle(req: Request, env: Env): Promise<Response> {
 
   const steps: { tool: string; kind: string; ok: boolean; note?: string }[] = [];
   let pending: unknown = undefined;
+  let executions = 0;
 
   // ---- the tool loop. Bounded, because a model that keeps calling tools is a model
   //      that is stuck, and an unbounded loop here is a bill.
@@ -502,7 +640,12 @@ export async function handle(req: Request, env: Env): Promise<Response> {
     try {
       completion = await callKimi(env, env.KIMI_MODEL || def.model.name, def.model.temperature, def.model.maxTokens, messages, tools);
     } catch (err) {
-      return json({ error: "The assistant service is unavailable.", detail: String(err).slice(0, 200) }, 502, headers);
+      // The detail used to be relayed. It is the model provider's error body, verbatim, to
+      // an unauthenticated caller — account state, org ids, quota. Log it, do not publish
+      // it. /health is the place to diagnose a provider problem.
+      console.error("kimi call failed:", String(err).slice(0, 500));
+      await flush(env, audit);
+      return json({ error: "The assistant service is unavailable." }, 502, headers);
     }
 
     const choice = completion.choices[0];
@@ -515,7 +658,18 @@ export async function handle(req: Request, env: Env): Promise<Response> {
 
     messages.push(choice.message);
 
-    for (const call of calls) {
+    // `toolCallsPerTurn` bounds model ROUNDS; a single round may carry many calls, and a
+    // model that returns a hundred of them would run a hundred executions — each of which,
+    // for property_records, is up to eight requests to NYC Open Data under our app token.
+    // Bound the executions too.
+    const maxExecutions = limits.toolCallsPerTurn * 4;
+    if (executions >= maxExecutions) {
+      steps.push({ tool: "(budget)", kind: "refused", ok: false, note: "Tool budget for this turn is spent." });
+      break;
+    }
+
+    for (const call of calls.slice(0, maxExecutions - executions)) {
+      executions++;
       const name = call.function.name;
       let args: Record<string, unknown> = {};
       try { args = JSON.parse(call.function.arguments || "{}"); } catch { /* malformed — treat as empty */ }
@@ -548,7 +702,19 @@ export async function handle(req: Request, env: Env): Promise<Response> {
       // A write is never applied here. It is handed back for the person to confirm, and
       // the application performs it through its own store action.
       if (isWriteIntent(result)) {
-        pending = result;
+        // Redact here too. This branch used to return the intent raw, so a `target` object
+        // carrying a field the tier may not see reached both the transcript and the
+        // confirmation card — and the offline engine, which redacts every result, behaved
+        // differently from the gateway on exactly the calls that write.
+        const safe = redactFor(def.id, result) as typeof result;
+        if (pending) {
+          // One slot. A second intent used to be dropped while still being audited as
+          // confirmed — a write recorded as approved that nothing would ever apply.
+          steps.push({ tool: name, kind: "refused", ok: false, note: "Only one change can be confirmed at a time." });
+          messages.push({ role: "tool", tool_call_id: call.id, content: JSON.stringify({ refused: true, reason: "A change is already awaiting confirmation. Ask for one at a time." }) });
+          continue;
+        }
+        pending = safe;
         audit.push(auditEntry(caller, name, args, "confirmed", result.summary));
         steps.push({ tool: name, kind: "operate", ok: true });
         messages.push({ role: "tool", tool_call_id: call.id, content: JSON.stringify({ awaitingConfirmation: true, summary: result.summary }) });

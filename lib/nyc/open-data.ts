@@ -273,7 +273,18 @@ export async function findLots(address: string, borough?: BoroughCode, limit = 5
     $limit: String(limit),
   });
   if (!second.ok) return second;
-  return { ok: true, data: second.data.map(toLotFacts) };
+
+  // The wide pass matches on house number plus the FIRST WORD of the street, so
+  // "301 East 79 Street" also matches 301 East 21st and 301 East 45th. Callers take
+  // `data[0]`, which meant a confident answer about a different building — its owner, its
+  // deeds, its mortgages. Keep only rows whose street actually starts with what was asked
+  // for; an empty result and an honest "not found" is the correct answer here.
+  const wanted = `${parsed.number} ${parsed.street}`;
+  const plausible = second.data.filter((r) => {
+    const addr = (r.address ?? "").toUpperCase();
+    return addr.startsWith(wanted) || addr === `${parsed.number} ${head}`;
+  });
+  return { ok: true, data: plausible.map(toLotFacts) };
 }
 
 /** Read one lot directly when the borough/block/lot is already known. */
@@ -324,8 +335,14 @@ export async function recordedDocuments(
   const acrisBorough = BOROUGHS[borough].acris;
 
   const legals = await query<LegalRow>(DATASET.acrisLegals, {
-    $select: "document_id",
+    $select: "document_id,good_through_date",
     $where: `borough = ${sq(acrisBorough)} AND block = ${sq(block)} AND lot = ${sq(lot)}`,
+    // Newest first. Without an $order Socrata returns rows in its own order — roughly
+    // oldest first — so on a building with hundreds of recorded documents (any condo, any
+    // pre-war co-op) the "most recent deed" was the newest of the OLDEST few hundred. A
+    // 1987 deed was being reported as the last sale, and 1980s mortgages as current
+    // encumbrances, with no caveat.
+    $order: "good_through_date DESC",
     $limit: String(limit * 3),
   });
   if (!legals.ok) return legals;
@@ -336,6 +353,7 @@ export async function recordedDocuments(
   const master = await query<MasterRow>(DATASET.acrisMaster, {
     $select: "document_id,doc_type,document_date,document_amt,recorded_datetime",
     $where: `document_id in (${ids.map(sq).join(",")})`,
+    $order: "recorded_datetime DESC",
     $limit: String(ids.length),
   });
   if (!master.ok) return master;
@@ -402,6 +420,14 @@ export async function documentParties(documentId: string): Promise<Fetched<Docum
  */
 export function unusedFloorArea(lot: LotFacts): number | null {
   if (lot.residentialFar === null || lot.builtFar === null || lot.lotAreaSqFt === null) return null;
+  // A PLUTO `builtfar` of 0 means "not recorded" far more often than it means "vacant" —
+  // it is 0 on condo billing lots and wherever the building area is missing. Treating it
+  // as a real zero reported a fully built site as having its entire envelope available:
+  // residfar 4.0 on a 2,500 sq ft lot came back as "about 10,000 sq ft of unused floor
+  // area". The row's own buildingAreaSqFt is nulled for exactly this reason (zeroToNull);
+  // this figure has to agree with it.
+  if (lot.builtFar === 0 && lot.buildingAreaSqFt === null) return null;
+  if (lot.residentialFar === 0) return null;
   const gap = lot.residentialFar - lot.builtFar;
   if (gap <= 0) return 0;
   return Math.round(gap * lot.lotAreaSqFt);
