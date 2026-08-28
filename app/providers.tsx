@@ -4,6 +4,7 @@ import { Toaster } from "sonner";
 import { TooltipProvider } from "@/components/ui/misc";
 import { SessionProvider } from "@/lib/session";
 import { StoreProvider } from "@/lib/store";
+import { Assistant } from "@/components/ai/assistant";
 
 export function Providers({ children }: { children: React.ReactNode }) {
   return (
@@ -11,6 +12,9 @@ export function Providers({ children }: { children: React.ReactNode }) {
       <StoreProvider>
         <TooltipProvider delayDuration={250}>
           {children}
+          {/* Mounted once. Which assistant appears — and whether one appears at all —
+              is decided by the route and the session, inside the component. */}
+          <Assistant />
           <Toaster
             position="bottom-right"
             toastOptions={{

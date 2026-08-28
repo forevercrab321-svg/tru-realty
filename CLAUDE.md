@@ -13,8 +13,13 @@ Read `docs/product-architecture.md` before making changes. The short version:
 - Every list, table and tab needs an `EmptyState`.
 - `TODAY` in `lib/format.ts` is pinned to 2026-08-26 so the seeded demo stays consistent.
 - Keep files under ~400 lines; extract to `components/` when a page grows.
+- **AI assistants**: three tiers defined once in `lib/ai/agents.ts`. Tools go in
+  `lib/ai/tools.ts` and MUST narrow by the `Scope` argument on their first line. An
+  `operate` tool returns a write intent — it never mutates. Read `docs/ai-agents.md`
+  before touching any of it.
+- Never put a key in `NEXT_PUBLIC_*`. This is a static export; that bundle is public.
 
-Before finishing: `npx tsc --noEmit`, `npm run lint`, `npm run build` — all three must pass.
+Before finishing: `npx tsc --noEmit`, `npm run lint`, `npm test`, `npm run build` — all four must pass.
 
 <!-- BEGIN:nextjs-agent-rules -->
 

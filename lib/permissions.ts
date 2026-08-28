@@ -82,3 +82,8 @@ export const PERMISSION_GROUPS: { label: string; items: { key: Permission; label
 export function can(role: RoleKey, permission: Permission) {
   return ROLES.find((r) => r.key === role)?.permissions.includes(permission) ?? false;
 }
+
+/** Every permission a role holds. Used by the AI gateway to bound a tool call to the caller. */
+export function permissionsFor(role: RoleKey): Permission[] {
+  return ROLES.find((r) => r.key === role)?.permissions ?? [];
+}
