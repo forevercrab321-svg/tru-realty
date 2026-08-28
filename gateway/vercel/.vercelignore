@@ -1,0 +1,2 @@
+# Only the function and its bundle need to ship.
+node_modules

@@ -2,10 +2,10 @@
 
 The service that holds the Kimi key. Deploy it and the three assistants stop being a demo.
 
-> **Run it on Deno Deploy, not Cloudflare Workers, if you are using a Kimi Code
-> subscription key.** `api.kimi.com` serves a Cloudflare bot-protection page to requests
-> originating from Cloudflare Workers, so the subscription endpoint is unreachable from a
-> Worker. Evidence and both deploy paths are below.
+> **Do not run it on Cloudflare Workers if you are using a Kimi Code subscription key.**
+> `api.kimi.com` serves a Cloudflare bot-protection page to requests originating from
+> Cloudflare Workers, so the subscription endpoint is unreachable from a Worker. Four
+> deploy targets and the evidence are below.
 
 ## Why this exists at all
 
@@ -44,14 +44,56 @@ arrived. Kimi's own error reference documents 403 only as a quota condition retu
 JSON, so that page is not theirs — it is the edge in front of them refusing the traffic.
 Changing the User-Agent does not help; it is not a header problem.
 
-So:
+The Worker *can* reach both pay-as-you-go platforms — `/health` gets a proper JSON 401
+from each. Only `api.kimi.com` refuses it. So the choice is really about which key you have:
 
-- **Kimi Code subscription key** (`api.kimi.com/coding/v1`) -> deploy to **Deno Deploy**.
-- **Pay-as-you-go platform key** (`api.moonshot.ai/v1` or `api.moonshot.cn/v1`) -> either
-  host works; Cloudflare Workers is fine.
+| Your key | Host | Why |
+|---|---|---|
+| **Pay-as-you-go** (`platform.moonshot.cn` / `platform.kimi.ai`) | The Cloudflare Worker you already deployed | Verified working. Nothing new to set up. Costs per token. |
+| **Kimi Code / membership subscription** | Vercel, Alibaba Function Compute, or Deno Deploy | Uses your monthly quota. Needs a non-Cloudflare host. |
 
-`handle()` in `src/index.ts` is written against Web standards only, so it is the same code
-either way. Only a fifteen-line adapter differs.
+`handle()` in `src/index.ts` is written against Web standards only — `fetch`, `Request`,
+`Response`, `crypto.subtle` — so all four targets run the same code, the same permission
+checks, the same redaction and the same audit log. Only a ~20-line adapter differs, and
+`KVNamespace` was replaced by a two-method `Store` interface to make that true.
+
+### Picking one
+
+**Vercel** if you already pay for it: marginal cost is zero and it is five minutes. Use the
+**Node.js runtime, not Edge** — Vercel Edge Functions run on Cloudflare's network, which is
+the thing being blocked. `gateway/vercel/api/gateway.ts` pins this.
+
+**Alibaba Function Compute** is the most likely to be *allowed*, because `api.kimi.com` is a
+China service and this is a mainland network. Compute is nearly free. The real cost is the
+ICP filing: FC's built-in domain is documented as test-only, and a public-facing service in
+a mainland region wants a filed custom domain — typically one to three weeks. A Hong Kong
+region skips the filing but also skips the one technical advantage. See
+`gateway/aliyun/README.md`.
+
+**Deno Deploy** is free and needs no card, but like Vercel it is a foreign network, so
+whether `api.kimi.com` accepts it is unverified.
+
+None of the three foreign hosts is *known* to work — the only thing measured so far is that
+a residential connection works and Cloudflare Workers does not. Each is a five-minute test:
+deploy, then `curl /health` and read `verdict`.
+
+## Deploy - Vercel
+
+```bash
+cd gateway/vercel
+```
+```bash
+npx vercel deploy --prod
+```
+
+Then set the environment variables in the Vercel dashboard (Project -> Settings ->
+Environment Variables), using the same table as the Deno section below. Vercel's CLI login
+is interactive and belongs to you — nothing here needs your token.
+
+## Deploy - Alibaba Function Compute
+
+See `gateway/aliyun/README.md` — it is a console flow rather than a CLI one, and the
+备案 trade-off is written out there.
 
 ## Deploy - Deno Deploy
 
