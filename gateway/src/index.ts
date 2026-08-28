@@ -61,6 +61,8 @@ export interface Env {
    * calls the same model `k3`. Set this to match wherever KIMI_BASE_URL points.
    */
   KIMI_MODEL?: string;
+  /** Sent on every outbound call. Some Kimi endpoints WAF-block an empty User-Agent. */
+  KIMI_USER_AGENT?: string;
 }
 
 const DEFAULT_KIMI_BASE = "https://api.moonshot.ai/v1";
@@ -182,6 +184,10 @@ async function callKimi(env: Env, model: string, temperature: number, maxTokens:
     headers: {
       Authorization: `Bearer ${env.KIMI_API_KEY}`,
       "Content-Type": "application/json",
+      // api.kimi.com sits behind a WAF that 403s a request with no User-Agent and
+      // returns an HTML challenge page, which looks nothing like an auth failure.
+      "User-Agent": env.KIMI_USER_AGENT || "kimi-cli/1.0",
+      Accept: "application/json",
     },
     body: JSON.stringify({
       model,
@@ -240,36 +246,79 @@ export default {
               : undefined,
         };
 
-        const probe = async (base: string) => {
+        const ua = env.KIMI_USER_AGENT || "kimi-cli/1.0";
+        const auth = {
+          Authorization: `Bearer ${k}`,
+          "User-Agent": ua,
+          Accept: "application/json",
+          "Content-Type": "application/json",
+        };
+
+        /**
+         * Two probes, because `/models` is not universal. The subscription endpoint answers
+         * chat but may not enumerate models, and a WAF in front of either returns HTML —
+         * so the shape of the body matters as much as the status.
+         */
+        const probe = async (base: string, model: string) => {
+          const out: Record<string, unknown> = {};
           try {
-            const r = await fetch(`${base}/models`, { headers: { Authorization: `Bearer ${k}` } });
+            const r = await fetch(`${base}/models`, { headers: auth });
             const text = await r.text();
-            return r.ok
-              ? { ok: true, status: r.status, models: (JSON.parse(text) as { data?: { id: string }[] }).data?.map((m) => m.id) }
-              : { ok: false, status: r.status, body: text.slice(0, 200) };
+            const html = text.trimStart().startsWith("<");
+            out.models = r.ok
+              ? { ok: true, status: r.status, ids: (JSON.parse(text) as { data?: { id: string }[] }).data?.map((m) => m.id) }
+              : { ok: false, status: r.status, html, body: text.slice(0, 160) };
           } catch (err) {
-            return { ok: false, error: String(err).slice(0, 160) };
+            out.models = { ok: false, error: String(err).slice(0, 120) };
           }
+          try {
+            // The call that actually matters — one token, cheapest possible.
+            const r = await fetch(`${base}/chat/completions`, {
+              method: "POST",
+              headers: auth,
+              body: JSON.stringify({ model, messages: [{ role: "user", content: "hi" }], max_tokens: 1 }),
+            });
+            const text = await r.text();
+            const html = text.trimStart().startsWith("<");
+            out.chat = { ok: r.ok, status: r.status, html, body: text.slice(0, 200) };
+          } catch (err) {
+            out.chat = { ok: false, error: String(err).slice(0, 120) };
+          }
+          return { ...out, ok: (out.chat as { ok?: boolean }).ok === true } as {
+            ok: boolean; models?: unknown; chat?: unknown;
+          };
         };
 
         // Three places a Kimi key can be valid, and they do not overlap. A subscription
         // key is a real `sk-` key that 401s on both pay-as-you-go platforms, which reads
         // as "bad key" unless you know the third endpoint exists.
-        const CANDIDATES = [
-          "https://api.moonshot.ai/v1",
-          "https://api.moonshot.cn/v1",
-          "https://api.kimi.com/coding/v1",
+        const CANDIDATES: [string, string][] = [
+          ["https://api.moonshot.ai/v1", "kimi-k3"],
+          ["https://api.moonshot.cn/v1", "kimi-k3"],
+          ["https://api.kimi.com/coding/v1", "k3"],
+          ["https://api.kimi.com/coding/v1", "kimi-for-coding"],
         ];
-        const results = await Promise.all(CANDIDATES.map(probe));
-        report.endpoints = Object.fromEntries(CANDIDATES.map((u, i) => [u, results[i]]));
+        const results = await Promise.all(CANDIDATES.map(([u, m]) => probe(u, m)));
+        report.endpoints = Object.fromEntries(CANDIDATES.map(([u, m], i) => [`${u} (${m})`, results[i]]));
 
         const idx = results.findIndex((r) => r.ok);
-        const working = idx >= 0 ? CANDIDATES[idx] : null;
-        report.verdict = working
-          ? working === base
-            ? `Key works and KIMI_BASE_URL is correct. Models available: ${(results[idx] as { models?: string[] }).models?.join(", ")}`
-            : `Key works on ${working}, but KIMI_BASE_URL is set to ${base}. Change it and redeploy. Models there: ${(results[idx] as { models?: string[] }).models?.join(", ")}`
-          : "Rejected by all three endpoints. Either the key is wrong, or the account behind it has no active subscription and no balance.";
+        const anyHtml = results.some((r) => {
+          const c = r.chat as { html?: boolean } | undefined;
+          return c?.html === true;
+        });
+        if (idx >= 0) {
+          const [wu, wm] = CANDIDATES[idx];
+          report.verdict =
+            wu === base && wm === (env.KIMI_MODEL || "k3")
+              ? `Working. KIMI_BASE_URL and KIMI_MODEL are correct.`
+              : `Key works on ${wu} with model "${wm}". Set KIMI_BASE_URL="${wu}" and KIMI_MODEL="${wm}" and redeploy.`;
+        } else if (anyHtml) {
+          report.verdict =
+            "An endpoint returned HTML rather than JSON — that is a WAF or bot-protection page, not an authentication failure. The request is being blocked before it reaches the API. Usually a User-Agent problem: set KIMI_USER_AGENT to whatever the official client sends.";
+        } else {
+          report.verdict =
+            "Rejected everywhere with a real API error. Either the key is wrong, or the account behind it has no active subscription and no balance.";
+        }
       }
 
       return new Response(JSON.stringify(report, null, 2), {
