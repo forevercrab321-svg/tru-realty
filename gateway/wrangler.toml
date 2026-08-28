@@ -12,15 +12,21 @@ ALLOWED_ORIGINS = "https://forevercrab321-svg.github.io,http://localhost:3000,ht
 DEMO_SESSIONS = "true"
 REAL_DATA = "false"
 
-# Moonshot runs two region-partitioned platforms and the keys are NOT interchangeable.
-# A key from the wrong one returns a bare 401 "Invalid Authentication" that says nothing
-# about why. Set this to match wherever your key came from:
+# A Kimi key is valid in exactly one of three places, and they do not overlap. All three
+# issue `sk-` keys, so a key from the wrong one 401s in a way that reads as "bad key":
 #
-#   https://api.moonshot.ai/v1   for keys from platform.kimi.ai       (international)
-#   https://api.moonshot.cn/v1   for keys from platform.moonshot.cn   (China)
+#   https://api.moonshot.ai/v1       pay-as-you-go, keys from platform.kimi.ai
+#   https://api.moonshot.cn/v1       pay-as-you-go, keys from platform.moonshot.cn
+#   https://api.kimi.com/coding/v1   a Kimi Code / membership SUBSCRIPTION — billed against
+#                                    the monthly plan quota rather than per token
 #
-# GET /health tells you which one is live and whether the key works against it.
-KIMI_BASE_URL = "https://api.moonshot.cn/v1"
+# GET /health probes all three at once and tells you which one your key belongs to.
+KIMI_BASE_URL = "https://api.kimi.com/coding/v1"
+
+# Model ids belong to the endpoint, not to the app. The pay-as-you-go platforms call it
+# `kimi-k3`; the subscription endpoint calls the same model `k3`. Also there:
+# `kimi-for-coding`, `kimi-for-coding-highspeed`. /health lists what your key can see.
+KIMI_MODEL = "k3"
 
 # Audit log and rate-limit buckets. Created with:
 #   npx wrangler kv namespace create AUDIT

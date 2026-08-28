@@ -55,6 +55,12 @@ export interface Env {
    * whether the key actually works against it.
    */
   KIMI_BASE_URL?: string;
+  /**
+   * Overrides the model id for every tier. Model ids are a property of the endpoint, not
+   * of the app: the platform API calls it `kimi-k3`, the Kimi Code subscription endpoint
+   * calls the same model `k3`. Set this to match wherever KIMI_BASE_URL points.
+   */
+  KIMI_MODEL?: string;
 }
 
 const DEFAULT_KIMI_BASE = "https://api.moonshot.ai/v1";
@@ -246,18 +252,24 @@ export default {
           }
         };
 
-        const [intl, cn] = await Promise.all([
-          probe("https://api.moonshot.ai/v1"),
-          probe("https://api.moonshot.cn/v1"),
-        ]);
-        report.endpoints = { "api.moonshot.ai": intl, "api.moonshot.cn": cn };
+        // Three places a Kimi key can be valid, and they do not overlap. A subscription
+        // key is a real `sk-` key that 401s on both pay-as-you-go platforms, which reads
+        // as "bad key" unless you know the third endpoint exists.
+        const CANDIDATES = [
+          "https://api.moonshot.ai/v1",
+          "https://api.moonshot.cn/v1",
+          "https://api.kimi.com/coding/v1",
+        ];
+        const results = await Promise.all(CANDIDATES.map(probe));
+        report.endpoints = Object.fromEntries(CANDIDATES.map((u, i) => [u, results[i]]));
 
-        const working = intl.ok ? "https://api.moonshot.ai/v1" : cn.ok ? "https://api.moonshot.cn/v1" : null;
+        const idx = results.findIndex((r) => r.ok);
+        const working = idx >= 0 ? CANDIDATES[idx] : null;
         report.verdict = working
           ? working === base
-            ? "Key works and KIMI_BASE_URL is correct."
-            : `Key works on ${working}, but KIMI_BASE_URL is set to ${base}. Change it and redeploy.`
-          : "The key is rejected by BOTH platforms, so this is the key itself, not the endpoint. Either it is not a Developer Platform API key, or the platform account has never been funded — Moonshot requires a top-up before a key becomes active.";
+            ? `Key works and KIMI_BASE_URL is correct. Models available: ${(results[idx] as { models?: string[] }).models?.join(", ")}`
+            : `Key works on ${working}, but KIMI_BASE_URL is set to ${base}. Change it and redeploy. Models there: ${(results[idx] as { models?: string[] }).models?.join(", ")}`
+          : "Rejected by all three endpoints. Either the key is wrong, or the account behind it has no active subscription and no balance.";
       }
 
       return new Response(JSON.stringify(report, null, 2), {
@@ -348,7 +360,7 @@ export default {
     for (let round = 0; round < limits.toolCallsPerTurn; round++) {
       let completion;
       try {
-        completion = await callKimi(env, def.model.name, def.model.temperature, def.model.maxTokens, messages, tools);
+        completion = await callKimi(env, env.KIMI_MODEL || def.model.name, def.model.temperature, def.model.maxTokens, messages, tools);
       } catch (err) {
         return json({ error: "The assistant service is unavailable.", detail: String(err).slice(0, 200) }, 502, headers);
       }
