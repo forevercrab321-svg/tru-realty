@@ -26,20 +26,42 @@ labelled as offline in the window, so nobody in a demo is misled.
 
 ## Deploy
 
+Run these one line at a time. **Do not paste a line with a trailing `#` comment** — zsh does
+not treat `#` as a comment interactively, so the note becomes an argument and the command
+fails. That is how a `secret put` silently doesn't happen.
+
+`npm install` is optional: it only installs types for your editor. `npx` fetches wrangler
+itself, so deployment works without it.
+
 ```bash
 cd gateway
-npm install
 npx wrangler login
+```
 
-# Audit log + rate-limit buckets. Optional, but the audit log is the point of tier 3.
+The audit log and rate-limit buckets. The id it prints is already in `wrangler.toml`; run
+this only if you are setting up a fresh account.
+
+```bash
 npx wrangler kv namespace create AUDIT
-# paste the id it prints into wrangler.toml and uncomment the [[kv_namespaces]] block
+```
 
-# The two secrets. wrangler prompts for the value; it never appears in a file or in git.
+The two secrets. Each prompts for the value, which never touches a file or git.
+
+```bash
 npx wrangler secret put KIMI_API_KEY
-npx wrangler secret put SESSION_SECRET      # any long random string you generate
+npx wrangler secret put SESSION_SECRET
+```
 
+For the second one, generate the value first with `openssl rand -base64 48` and paste it.
+
+```bash
 npx wrangler deploy
+```
+
+Verify the secrets actually landed — this is the step worth not skipping:
+
+```bash
+npx wrangler secret list
 ```
 
 Then point the app at it and rebuild:

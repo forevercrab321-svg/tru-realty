@@ -12,12 +12,13 @@ ALLOWED_ORIGINS = "https://forevercrab321-svg.github.io,http://localhost:3000,ht
 DEMO_SESSIONS = "true"
 REAL_DATA = "false"
 
-# Audit log and rate-limit buckets. Create with:
+# Audit log and rate-limit buckets. Created with:
 #   npx wrangler kv namespace create AUDIT
-# then uncomment and paste the id wrangler prints.
-# [[kv_namespaces]]
-# binding = "AUDIT"
-# id = "<paste it here>"
+# A namespace id is not a secret — it is useless without account credentials — so it
+# belongs in the config rather than in a secret.
+[[kv_namespaces]]
+binding = "AUDIT"
+id = "e94c2c5a968544528b9400874cf12a70"
 
 # SECRETS — never in this file, never in git:
 #   npx wrangler secret put KIMI_API_KEY
