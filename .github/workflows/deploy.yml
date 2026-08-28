@@ -36,6 +36,10 @@ jobs:
       - name: Build static export
         run: npm run build
         env:
+          # Not a secret — just the Worker URL. Set it in Settings > Secrets and
+          # variables > Actions > Variables as AI_GATEWAY_URL. Empty means the
+          # assistants run offline, which is a valid state, not a broken one.
+          NEXT_PUBLIC_AI_GATEWAY: ${{ vars.AI_GATEWAY_URL }}
           # GitHub Pages project sites are served from https://<user>.github.io/<repo>/,
           # so the build needs that subpath. Two cases where you should change this:
           #   • a user/org site (repo named <user>.github.io) → set to ""

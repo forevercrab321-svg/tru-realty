@@ -80,6 +80,19 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
     const found = DEMO_ACCOUNTS.find((a) => a.email.toLowerCase() === email.trim().toLowerCase()) ?? null;
     if (found) {
       window.localStorage.setItem(KEY, found.email);
+      // When a gateway is configured, sign in there too. The assistants get their
+      // identity from a cookie the gateway signs and verifies — never from anything
+      // this browser asserts about itself. Fire and forget: a gateway that is down
+      // must not block signing in to the app.
+      const gw = process.env.NEXT_PUBLIC_AI_GATEWAY;
+      if (gw) {
+        void fetch(`${gw}/session`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify({ email: found.email }),
+        }).catch(() => {});
+      }
       document.cookie = `tru_role=${found.role}; path=/; max-age=86400`;
       emitSessionChange();
     }

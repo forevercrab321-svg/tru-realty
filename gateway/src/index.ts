@@ -35,9 +35,28 @@ export interface Env {
   AUDIT?: KVNamespace;
   /** Comma-separated. Requests from anywhere else are refused. */
   ALLOWED_ORIGINS: string;
+  /**
+   * "true" turns on POST /session, which mints a signed cookie from the demo account
+   * list with NO password check. That is fine for a demo over seeded data and is a
+   * disaster over real records, so it is off unless you set it, and the endpoint
+   * refuses to run at all once REAL_DATA is "true".
+   */
+  DEMO_SESSIONS?: string;
+  REAL_DATA?: string;
 }
 
 const KIMI_BASE = "https://api.moonshot.ai/v1";
+
+/** The demo roster, mirroring lib/session.tsx. Only reachable when DEMO_SESSIONS is on. */
+const DEMO_ACCOUNTS: Record<string, { userId: string; role: NonNullable<Caller["role"]>; agentId: string | null }> = {
+  "admin@trurealty.com":      { userId: "usr_admin_whitfield", role: "super_admin", agentId: null },
+  "ops@trurealty.com":        { userId: "usr_admin_okafor", role: "brokerage_admin", agentId: null },
+  "tc@trurealty.com":         { userId: "usr_tc_reeves", role: "transaction_coordinator", agentId: null },
+  "hr@trurealty.com":         { userId: "usr_hr_bell", role: "hr_ops", agentId: null },
+  "accounting@trurealty.com": { userId: "usr_acct_navarro", role: "accounting", agentId: null },
+  "agent@trurealty.com":      { userId: "usr_ag_schen", role: "agent", agentId: "ag_schen" },
+  "newagent@trurealty.com":   { userId: "usr_ag_cwhite", role: "agent", agentId: "ag_cwhite" },
+};
 
 /* ---------------------------------------------------------------- SESSION */
 
@@ -52,8 +71,8 @@ interface SessionClaims {
  * Verify the session cookie. This is the only place the caller's identity comes from.
  *
  * The cookie is `<base64url(json)>.<base64url(hmac)>`, signed with SESSION_SECRET by
- * whatever issues sessions for the real app. Until that exists, DEMO_MODE below accepts an
- * unsigned identity — and refuses to start if it is enabled alongside a production origin,
+ * whatever issues sessions for the real app. Until that exists, POST /session mints one
+ * from the demo roster — opt-in via DEMO_SESSIONS, and hard-refused once REAL_DATA is on,
  * because the failure mode of getting that wrong is "anyone is an admin".
  */
 async function verifySession(req: Request, env: Env): Promise<SessionClaims | null> {
@@ -78,6 +97,23 @@ async function verifySession(req: Request, env: Env): Promise<SessionClaims | nu
   } catch {
     return null;
   }
+}
+
+/** Mint a signed session cookie. Demo only — see DEMO_SESSIONS. */
+async function signSession(env: Env, claims: SessionClaims): Promise<string> {
+  const payload = bytesToB64url(new TextEncoder().encode(JSON.stringify(claims)));
+  const key = await crypto.subtle.importKey(
+    "raw", new TextEncoder().encode(env.SESSION_SECRET),
+    { name: "HMAC", hash: "SHA-256" }, false, ["sign"],
+  );
+  const sig = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(payload));
+  return `${payload}.${bytesToB64url(new Uint8Array(sig))}`;
+}
+
+function bytesToB64url(b: Uint8Array): string {
+  let bin = "";
+  for (const byte of b) bin += String.fromCharCode(byte);
+  return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 
 function b64urlToBytes(s: string): Uint8Array {
@@ -155,6 +191,28 @@ export default {
     if (req.method !== "POST") return new Response("Method not allowed", { status: 405, headers });
 
     const url = new URL(req.url);
+
+    // ---- POST /session — demo sign-in. Explicitly opt-in, and hard-refused once the
+    //      Worker is pointed at real records, because there is no password check here.
+    if (url.pathname === "/session") {
+      if (env.DEMO_SESSIONS !== "true" || env.REAL_DATA === "true") {
+        return json({ error: "Demo sessions are disabled on this gateway." }, 403, headers);
+      }
+      const { email } = (await req.json()) as { email?: string };
+      const account = DEMO_ACCOUNTS[(email ?? "").trim().toLowerCase()];
+      if (!account) return json({ error: "Unknown demo account." }, 401, headers);
+      const cookie = await signSession(env, { ...account, exp: Math.floor(Date.now() / 1000) + 12 * 3600 });
+      return new Response(JSON.stringify({ ok: true, role: account.role }), {
+        status: 200,
+        headers: {
+          ...headers,
+          "Content-Type": "application/json",
+          // SameSite=None because the app and the gateway are on different origins.
+          "Set-Cookie": `tru_session=${encodeURIComponent(cookie)}; Path=/; Max-Age=43200; HttpOnly; Secure; SameSite=None`,
+        },
+      });
+    }
+
     if (url.pathname !== "/chat") return new Response("Not found", { status: 404, headers });
 
     const body = (await req.json()) as {

@@ -51,6 +51,18 @@ NEXT_PUBLIC_AI_GATEWAY=https://tru-ai-gateway.<your-subdomain>.workers.dev npm r
 Add the deployed app's origin to `ALLOWED_ORIGINS` in `wrangler.toml` before you do, or the
 gateway will refuse the request — which is the correct behaviour and worth seeing once.
 
+## Signing in, so tiers 2 and 3 work
+
+The assistants take their identity from a cookie **this Worker signs and verifies**, not
+from anything the browser claims. The real app will mint that cookie from real auth. Until
+then, `POST /session` mints one from the demo roster — no password check, which is correct
+for seeded data and wrong for anything else. It is off unless `DEMO_SESSIONS = "true"`, and
+refused outright once `REAL_DATA = "true"`.
+
+The app calls it automatically on demo sign-in when `NEXT_PUBLIC_AI_GATEWAY` is set. If you
+skip this, tier 1 still works for everyone and tiers 2 and 3 return 401 — which is the
+right direction to fail.
+
 ## What it enforces, and why each check is here
 
 | Check | What it stops |
@@ -74,10 +86,12 @@ gateway will refuse the request — which is the correct behaviour and worth see
 ```
 
 Whatever issues real sessions for this app — Supabase Auth, WorkOS, your own endpoint —
-signs this and sets it `HttpOnly; Secure; SameSite=Lax`. Until that exists the gateway
-returns 401 for tiers 2 and 3, which is the right direction to fail. **Do not add a
-development bypass that trusts the request body**; if you need one for local work, gate it
-on `wrangler dev` and never on a deployed Worker.
+should sign this and set it `HttpOnly; Secure; SameSite=Lax`. Point `POST /session` at that
+instead of the demo roster, then set `DEMO_SESSIONS = "false"` and `REAL_DATA = "true"`.
+
+**Never widen this to trust the request body.** The whole permission system rests on the
+gateway deriving identity itself; a "just for development" bypass that reads a role from
+JSON is the one change that turns all of it back into a suggestion.
 
 ## Cost control
 

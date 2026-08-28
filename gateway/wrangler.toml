@@ -6,6 +6,12 @@ compatibility_date = "2026-08-01"
 [vars]
 ALLOWED_ORIGINS = "https://forevercrab321-svg.github.io,http://localhost:3000,http://localhost:4000"
 
+# Lets POST /session mint a session from the demo roster with no password check.
+# Correct for a demo over seeded data. Set to "false" the moment real records exist,
+# and set REAL_DATA = "true", which refuses the endpoint outright.
+DEMO_SESSIONS = "true"
+REAL_DATA = "false"
+
 # Audit log and rate-limit buckets. Create with:
 #   npx wrangler kv namespace create AUDIT
 # then uncomment and paste the id wrangler prints.
