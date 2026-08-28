@@ -85,6 +85,30 @@ The app calls it automatically on demo sign-in when `NEXT_PUBLIC_AI_GATEWAY` is 
 skip this, tier 1 still works for everyone and tiers 2 and 3 return 401 — which is the
 right direction to fail.
 
+## Which endpoint your key belongs to
+
+Moonshot runs **two region-partitioned platforms, and the keys do not cross**:
+
+| Key from | Endpoint |
+|---|---|
+| `platform.kimi.ai` (international) | `https://api.moonshot.ai/v1` |
+| `platform.moonshot.cn` (China) | `https://api.moonshot.cn/v1` |
+
+Use a key on the wrong one and you get `401 Invalid Authentication` — with nothing in the
+message to distinguish "wrong platform" from "bad key" from "unfunded account". Set
+`KIMI_BASE_URL` in `wrangler.toml` to match, and redeploy.
+
+## Checking it works
+
+```bash
+curl -s https://<your-worker>.workers.dev/health
+```
+
+`/health` sits outside the CORS gate so a plain curl reaches it. It reports whether each
+secret is set, whether the KV namespace is bound, which endpoint is live, and — by calling
+`/models` with your key — whether the key actually works, naming the likely cause when it
+does not. It never returns the key or any part of it.
+
 ## What it enforces, and why each check is here
 
 | Check | What it stops |

@@ -12,6 +12,16 @@ ALLOWED_ORIGINS = "https://forevercrab321-svg.github.io,http://localhost:3000,ht
 DEMO_SESSIONS = "true"
 REAL_DATA = "false"
 
+# Moonshot runs two region-partitioned platforms and the keys are NOT interchangeable.
+# A key from the wrong one returns a bare 401 "Invalid Authentication" that says nothing
+# about why. Set this to match wherever your key came from:
+#
+#   https://api.moonshot.ai/v1   for keys from platform.kimi.ai       (international)
+#   https://api.moonshot.cn/v1   for keys from platform.moonshot.cn   (China)
+#
+# GET /health tells you which one is live and whether the key works against it.
+KIMI_BASE_URL = "https://api.moonshot.ai/v1"
+
 # Audit log and rate-limit buckets. Created with:
 #   npx wrangler kv namespace create AUDIT
 # A namespace id is not a secret — it is useless without account credentials — so it

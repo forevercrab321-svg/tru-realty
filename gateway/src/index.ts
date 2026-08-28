@@ -43,9 +43,22 @@ export interface Env {
    */
   DEMO_SESSIONS?: string;
   REAL_DATA?: string;
+  /**
+   * Moonshot runs two region-partitioned platforms and the keys are NOT interchangeable —
+   * a key issued on one returns a bare 401 "Invalid Authentication" on the other, with
+   * nothing in the message to tell you that is what happened.
+   *
+   *   https://api.moonshot.ai/v1   keys from platform.kimi.ai       (international)
+   *   https://api.moonshot.cn/v1   keys from platform.moonshot.cn   (China)
+   *
+   * Set it to match wherever the key came from. GET /health reports which one is live and
+   * whether the key actually works against it.
+   */
+  KIMI_BASE_URL?: string;
 }
 
-const KIMI_BASE = "https://api.moonshot.ai/v1";
+const DEFAULT_KIMI_BASE = "https://api.moonshot.ai/v1";
+const kimiBase = (env: Env) => (env.KIMI_BASE_URL ?? DEFAULT_KIMI_BASE).replace(/\/+$/, "");
 
 /** The demo roster, mirroring lib/session.tsx. Only reachable when DEMO_SESSIONS is on. */
 const DEMO_ACCOUNTS: Record<string, { userId: string; role: NonNullable<Caller["role"]>; agentId: string | null }> = {
@@ -158,7 +171,7 @@ interface ChatMessage {
 }
 
 async function callKimi(env: Env, model: string, temperature: number, maxTokens: number, messages: ChatMessage[], tools: unknown[]) {
-  const res = await fetch(`${KIMI_BASE}/chat/completions`, {
+  const res = await fetch(`${kimiBase(env)}/chat/completions`, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${env.KIMI_API_KEY}`,
@@ -185,6 +198,52 @@ async function callKimi(env: Env, model: string, temperature: number, maxTokens:
 
 export default {
   async fetch(req: Request, env: Env): Promise<Response> {
+    // ---- GET /health. Deliberately outside the CORS gate so a plain curl can reach it,
+    //      and deliberately verbose about *which* thing is wrong. The failure this exists
+    //      for is a bare 401 that tells you nothing about whether the key is bad, the
+    //      account is unfunded, or the key is simply on the other region's platform.
+    if (new URL(req.url).pathname === "/health") {
+      const base = kimiBase(env);
+      const report: Record<string, unknown> = {
+        worker: "ok",
+        kimiBaseUrl: base,
+        secrets: {
+          KIMI_API_KEY: env.KIMI_API_KEY ? "set" : "MISSING",
+          SESSION_SECRET: env.SESSION_SECRET ? "set" : "MISSING",
+        },
+        bindings: { AUDIT: env.AUDIT ? "bound" : "not bound (audit log and rate limits are off)" },
+        demoSessions: env.DEMO_SESSIONS === "true" && env.REAL_DATA !== "true",
+        allowedOrigins: env.ALLOWED_ORIGINS.split(",").map((s) => s.trim()),
+      };
+
+      if (env.KIMI_API_KEY) {
+        try {
+          const probe = await fetch(`${base}/models`, { headers: { Authorization: `Bearer ${env.KIMI_API_KEY}` } });
+          const text = await probe.text();
+          report.kimi = probe.ok
+            ? { ok: true, status: probe.status, models: (JSON.parse(text) as { data?: { id: string }[] }).data?.map((m) => m.id).slice(0, 20) }
+            : {
+                ok: false,
+                status: probe.status,
+                body: text.slice(0, 300),
+                likelyCause:
+                  probe.status === 401
+                    ? `The key is not valid for ${base}. Moonshot's two platforms do not share keys: a key from platform.kimi.ai works only on api.moonshot.ai, and a key from platform.moonshot.cn works only on api.moonshot.cn. Set KIMI_BASE_URL to the other one and redeploy.`
+                    : probe.status === 429
+                      ? "Rate limited, or the platform account has no balance."
+                      : undefined,
+              };
+        } catch (err) {
+          report.kimi = { ok: false, error: String(err).slice(0, 200) };
+        }
+      }
+
+      return new Response(JSON.stringify(report, null, 2), {
+        status: 200,
+        headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
+      });
+    }
+
     const headers = cors(req, env);
     if (!headers) return new Response("Origin not allowed", { status: 403 });
     if (req.method === "OPTIONS") return new Response(null, { status: 204, headers });
