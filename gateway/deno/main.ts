@@ -73,6 +73,7 @@ const env = {
   KIMI_MODEL: Deno.env.get("KIMI_MODEL"),
   KIMI_USER_AGENT: Deno.env.get("KIMI_USER_AGENT"),
   KIMI_OMIT_TEMPERATURE: Deno.env.get("KIMI_OMIT_TEMPERATURE"),
+  NYC_APP_TOKEN: Deno.env.get("NYC_APP_TOKEN"),
   DEMO_SESSIONS: Deno.env.get("DEMO_SESSIONS"),
   REAL_DATA: Deno.env.get("REAL_DATA"),
   AUDIT: store,

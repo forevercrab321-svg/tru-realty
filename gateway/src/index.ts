@@ -25,6 +25,7 @@
 import { AGENTS, type AgentId } from "../../lib/ai/agents";
 import { allowTool, redactFor, scopeFor, auditEntry, LIMITS, type Caller } from "../../lib/ai/policy";
 import { TOOL_BY_NAME, toolSchemasFor, isWriteIntent } from "../../lib/ai/tools";
+import { setNycAppToken } from "../../lib/nyc/open-data";
 
 export interface Store {
   get(key: string): Promise<string | null>;
@@ -77,6 +78,13 @@ export interface Env {
    * on an endpoint already known to pin sampling — the handler learns this by itself.
    */
   KIMI_OMIT_TEMPERATURE?: string;
+  /**
+   * Optional Socrata app token for NYC Open Data. Not a credential — it identifies the
+   * caller for rate limiting and grants nothing — but it is read here rather than shipped
+   * in the browser bundle, because the rule about `NEXT_PUBLIC_*` is easier to keep when
+   * it has no exceptions. Without it the city API still answers, throttled per IP.
+   */
+  NYC_APP_TOKEN?: string;
 }
 
 const DEFAULT_KIMI_BASE = "https://api.moonshot.ai/v1";
@@ -266,6 +274,9 @@ async function callKimi(env: Env, model: string, temperature: number, maxTokens:
  * is unreachable from a Worker no matter what headers you send. See gateway/README.md.
  */
 export async function handle(req: Request, env: Env): Promise<Response> {
+  // Cheap and idempotent; the tools read this at call time, not at import time.
+  setNycAppToken(env.NYC_APP_TOKEN);
+
   // ---- GET /health. Deliberately outside the CORS gate so a plain curl can reach it,
   //      and deliberately verbose about *which* thing is wrong. The failure this exists
   //      for is a bare 401 that tells you nothing about whether the key is bad, the
@@ -527,7 +538,7 @@ export async function handle(req: Request, env: Env): Promise<Response> {
 
       let result: unknown;
       try {
-        result = tool.run(args, scope);
+        result = await tool.run(args, scope);
       } catch (err) {
         audit.push(auditEntry(caller, name, args, "error", String(err).slice(0, 200)));
         messages.push({ role: "tool", tool_call_id: call.id, content: JSON.stringify({ error: "Tool failed." }) });

@@ -68,6 +68,9 @@ const CONCIERGE: AgentDef = {
   tools: [
     "search_listings",
     "get_listing",
+    // City records for any NYC address, not just ours. Public data, and the one thing that
+    // lets the public assistant answer about a building we do not list.
+    "property_records",
     "list_agents",
     "get_agent_profile",
     "neighborhood_guide",
@@ -85,6 +88,8 @@ const CONCIERGE: AgentDef = {
     "agentId", "userId", "email", "phone", "internalNotes", "notes",
     "riskFlags", "complianceComplete", "documents", "tasks", "timeline",
     "leadSource", "budgetMin", "budgetMax", "candidate", "*.tin", "*.plan",
+    // NYC public records: a visitor gets the building, never the people or the tax figures.
+    "ownerOnTaxRoll", "parties", "mortgages", "assessedTotal", "assessedLand",
   ],
   refuse: [
     "agent commission, splits, caps or fees",
@@ -151,9 +156,10 @@ const COPILOT: AgentDef = {
   tools: [
     // respond
     "my_book", "get_transaction", "get_client", "get_listing", "search_listings",
-    "library_search", "list_events", "my_plan",
+    "library_search", "list_events", "my_plan", "property_records",
     // verify
     "file_health", "commission_breakdown", "net_sheet", "cap_progress", "closing_risk",
+    "development_potential",
     // operate — own scope only
     "create_client", "update_client", "log_activity", "add_note",
     "complete_task", "move_stage", "schedule_showing", "draft_message",
@@ -243,9 +249,10 @@ const OPERATOR: AgentDef = {
     "brokerage_overview", "search_transactions", "get_transaction", "search_agents",
     "get_agent", "search_clients", "get_client", "search_listings", "get_listing",
     "recruiting_pipeline", "library_search", "list_events", "performance_report",
+    "property_records", "ownership_record",
     // verify — the reason this tier exists
     "compliance_audit", "reconcile_payout_run", "licence_watch", "cap_audit",
-    "file_health", "commission_breakdown", "data_integrity_check",
+    "file_health", "commission_breakdown", "data_integrity_check", "development_potential",
     // operate
     "assign_coordinator", "reassign_transaction", "move_stage", "complete_task",
     "request_document", "approve_document", "send_reminder", "update_agent_status",
@@ -351,6 +358,11 @@ export const TOOL_PERMISSION: Record<string, Permission> = {
   cap_audit: "commission.view",
   file_health: "transactions.view",
   commission_breakdown: "commission.view",
+  // City records are public, but reading them under the brokerage's name is still work:
+  // gate them on the same permission as looking at a listing, and ownership on clients.
+  property_records: "listings.view",
+  development_potential: "listings.view",
+  ownership_record: "clients.view",
   assign_coordinator: "transactions.edit",
   reassign_transaction: "transactions.edit",
   move_stage: "transactions.edit",

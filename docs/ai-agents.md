@@ -154,6 +154,62 @@ This is the codebase's first test suite. It starts here because permission bound
 the one thing you cannot verify by looking at the screen: a leak looks exactly like a
 correct answer until someone reads the transcript.
 
+## Reading real data: NYC public records
+
+Three tools read live from NYC Open Data rather than from the seeded dataset —
+`property_records`, `development_potential`, `ownership_record`. The client is
+`lib/nyc/open-data.ts`.
+
+**Why this source.** It is the only real-property data the brokerage can use today with no
+MLS membership, no licence agreement and no vendor: PLUTO for what a building *is*, ACRIS
+for what has been *recorded* against it, including the price actually paid. It answers most
+of what a client asks about a specific building.
+
+**What it is not.** It is not listings, and nothing in it says whether a property is for
+sale. Active inventory belongs to the MLS and arrives through a licensed IDX feed. Scraping
+a portal for it would breach that portal's terms *and* the MLS licences the data came from,
+and would put the brokerage's own RLS participation at risk — which is why there is no code
+here that does it, and should not be.
+
+**No database needed.** Each call is a live Socrata query cached in memory for five
+minutes. A bulk sync of 860,000 tax lots has nowhere to live in a static export; a
+per-question lookup needs nowhere to live. `ToolDef.run` may now return a promise, and both
+call sites await it.
+
+**The tiering, which is about publication rather than secrecy** — all of this is public
+record; the question is what the brokerage repeats under its own name:
+
+| | Tier 1 | Tier 2 | Tier 3 |
+|---|---|---|---|
+| Building facts, zoning, sale prices | ✅ | ✅ | ✅ |
+| Assessed value, unused floor area, tax-roll owner | — | ✅ | ✅ |
+| Deed parties, mortgages | — | — | ✅ |
+
+Enforced twice over: the executor branches on `scope.tier` on its first line, and tier 1's
+`redact` list names `ownerOnTaxRoll`, `parties`, `mortgages` and the assessed figures, so a
+future tool that forgot still cannot leak them into a visitor's transcript. Tier 3 narrows
+again by role — HR holds neither `clients.view` nor `listings.view` and gets none of these;
+accounting can release money and still cannot pull an ownership record.
+
+**One field is withheld at every tier.** ACRIS publishes each party's mailing address.
+`documentParties()` drops it. No brokerage task needs a named individual's home address,
+and an assistant that reads one out on request is a tool for building a list of people to
+doorstep.
+
+**Failure is a value, not an exception.** The city API is sometimes slow and sometimes
+down; every function resolves to `{ ok: false, note }` so the assistant can say the records
+service did not answer instead of the turn dying. There is a test for it.
+
+**Address matching is the fiddly part.** PLUTO stores one form and matches nothing else:
+directions spelled out, ordinals stripped, street types expanded — `425 W 21st St` is
+`425 WEST 21 STREET`. `normalizeAddress()` does that conversion, with a second, wider pass
+when the strict prefix finds nothing.
+
+**Optional `NYC_APP_TOKEN`.** A Socrata rate-limit identifier, not a credential. Read by
+the gateway from its own environment rather than shipped in the browser bundle, because the
+`NEXT_PUBLIC_*` rule is easier to keep when it has no exceptions. Without it the API still
+answers, throttled per IP.
+
 ## Adding a tool
 
 1. Add it to `TOOLS` in `lib/ai/tools.ts` with a JSON schema and an executor that takes

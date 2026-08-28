@@ -83,6 +83,7 @@ const env = {
   KIMI_MODEL: process.env.KIMI_MODEL,
   KIMI_USER_AGENT: process.env.KIMI_USER_AGENT,
   KIMI_OMIT_TEMPERATURE: process.env.KIMI_OMIT_TEMPERATURE,
+  NYC_APP_TOKEN: process.env.NYC_APP_TOKEN,
   DEMO_SESSIONS: process.env.DEMO_SESSIONS,
   REAL_DATA: process.env.REAL_DATA,
   AUDIT: store,

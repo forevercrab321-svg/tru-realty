@@ -18,6 +18,9 @@ Read `docs/product-architecture.md` before making changes. The short version:
   `operate` tool returns a write intent — it never mutates. Read `docs/ai-agents.md`
   before touching any of it.
 - Never put a key in `NEXT_PUBLIC_*`. This is a static export; that bundle is public.
+- **NYC public records** (`lib/nyc/open-data.ts`) are read live, never scraped from a
+  portal. Listings come from a licensed MLS feed or not at all. `ToolDef.run` may return a
+  promise; both call sites await it.
 
 Before finishing: `npx tsc --noEmit`, `npm run lint`, `npm test`, `npm run build` — all four must pass.
 

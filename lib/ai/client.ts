@@ -112,7 +112,9 @@ async function viaLocal(def: AgentDef, caller: Caller, input: string): Promise<T
   const q = input.toLowerCase();
   const steps: NonNullable<Message["steps"]> = [];
 
-  const call = (tool: string, args: Record<string, unknown> = {}) => {
+  // Async because a tool may read NYC public records over the network. The permission
+  // check and the redaction stay exactly where they were, on either side of the call.
+  const call = async (tool: string, args: Record<string, unknown> = {}) => {
     const decision = allowTool(caller, tool);
     if (!decision.allowed) {
       steps.push({ tool, kind: "refused", ok: false, note: decision.reason });
@@ -120,7 +122,7 @@ async function viaLocal(def: AgentDef, caller: Caller, input: string): Promise<T
     }
     const def2 = TOOL_BY_NAME.get(tool);
     if (!def2) return null;
-    const raw = def2.run(args, scope);
+    const raw = await def2.run(args, scope);
     steps.push({ tool, kind: def2.kind, ok: true });
     return redactFor(def.id, raw);
   };
@@ -135,7 +137,7 @@ async function viaLocal(def: AgentDef, caller: Caller, input: string): Promise<T
     };
   }
 
-  const result = call(picked.tool, picked.args);
+  const result = await call(picked.tool, picked.args);
   if (result === null) {
     return { message: reply(`That is outside what ${def.name} is allowed to do. ${refusalHint(def)}`, steps) };
   }
@@ -172,6 +174,24 @@ function route(q: string, allowed: string[]): { tool: string; args: Record<strin
   if (has("overview", "how are we", "dashboard", "state of")) return pick("brokerage_overview");
   if (has("my book", "my deals", "my clients", "what do i")) return pick("my_book");
   if (has("agent", "who covers", "speaks")) return pick("list_agents", { neighborhood: extractHood(q) }) ?? pick("search_agents");
+  // A house number followed by a street name is a question about one building, whatever
+  // language the rest of the sentence is in. Checked before the neighborhood rule so
+  // "84 India Street" does not get answered with a guide to Greenpoint.
+  const street = /\b(\d+[a-z]?(?:-\d+)?)\s+([a-z0-9][a-z0-9'.\- ]{2,40}?)\s*(street|st\b|avenue|ave\b|av\b|road|rd\b|place|pl\b|boulevard|blvd\b|drive|dr\b|lane|ln\b|court|ct\b|parkway|pkwy\b|terrace|broadway|plaza)/i.exec(q);
+  if (street) {
+    const address = street[0];
+    if (has("develop", "air rights", "far", "buildable", "assemblage")) {
+      const dev = pick("development_potential", { address });
+      if (dev) return dev;
+    }
+    if (has("owner", "who owns", "mortgage", "lien")) {
+      const own = pick("ownership_record", { address });
+      if (own) return own;
+    }
+    const rec = pick("property_records", { address });
+    if (rec) return rec;
+  }
+
   if (has("neighborhood", "area", "guide")) return pick("neighborhood_guide", { name: extractHood(q) });
   if (has("office", "address", "phone")) return pick("list_offices");
   if (has("new development", "project", "sponsor")) return pick("list_projects");

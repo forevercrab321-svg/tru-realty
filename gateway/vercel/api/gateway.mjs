@@ -14,6 +14,9 @@ var CONCIERGE = {
   tools: [
     "search_listings",
     "get_listing",
+    // City records for any NYC address, not just ours. Public data, and the one thing that
+    // lets the public assistant answer about a building we do not list.
+    "property_records",
     "list_agents",
     "get_agent_profile",
     "neighborhood_guide",
@@ -54,7 +57,13 @@ var CONCIERGE = {
     "budgetMax",
     "candidate",
     "*.tin",
-    "*.plan"
+    "*.plan",
+    // NYC public records: a visitor gets the building, never the people or the tax figures.
+    "ownerOnTaxRoll",
+    "parties",
+    "mortgages",
+    "assessedTotal",
+    "assessedLand"
   ],
   refuse: [
     "agent commission, splits, caps or fees",
@@ -125,12 +134,14 @@ var COPILOT = {
     "library_search",
     "list_events",
     "my_plan",
+    "property_records",
     // verify
     "file_health",
     "commission_breakdown",
     "net_sheet",
     "cap_progress",
     "closing_risk",
+    "development_potential",
     // operate — own scope only
     "create_client",
     "update_client",
@@ -249,6 +260,8 @@ var OPERATOR = {
     "library_search",
     "list_events",
     "performance_report",
+    "property_records",
+    "ownership_record",
     // verify — the reason this tier exists
     "compliance_audit",
     "reconcile_payout_run",
@@ -257,6 +270,7 @@ var OPERATOR = {
     "file_health",
     "commission_breakdown",
     "data_integrity_check",
+    "development_potential",
     // operate
     "assign_coordinator",
     "reassign_transaction",
@@ -363,6 +377,11 @@ var TOOL_PERMISSION = {
   cap_audit: "commission.view",
   file_health: "transactions.view",
   commission_breakdown: "commission.view",
+  // City records are public, but reading them under the brokerage's name is still work:
+  // gate them on the same permission as looking at a listing, and ownership on clients.
+  property_records: "listings.view",
+  development_potential: "listings.view",
+  ownership_record: "clients.view",
   assign_coordinator: "transactions.edit",
   reassign_transaction: "transactions.edit",
   move_stage: "transactions.edit",
@@ -3164,12 +3183,293 @@ function agentActivity(agentId) {
 // lib/format.ts
 var TODAY = /* @__PURE__ */ new Date("2026-08-26T12:00:00");
 
+// lib/nyc/open-data.ts
+var SOCRATA = "https://data.cityofnewyork.us/resource";
+var DATASET = {
+  /** Primary Land Use Tax Lot Output — one row per tax lot. */
+  pluto: "64uk-42ks",
+  /** ACRIS Real Property Legals — maps a recorded document to a borough/block/lot. */
+  acrisLegals: "8h5j-fqxa",
+  /** ACRIS Real Property Master — the document itself: type, date, amount. */
+  acrisMaster: "bnx9-e6tj",
+  /** ACRIS Real Property Parties — who was on each side of the document. */
+  acrisParties: "636b-3b5g"
+};
+var appToken;
+var setNycAppToken = (token) => {
+  appToken = token && token.trim() ? token.trim() : void 0;
+};
+var TIMEOUT_MS = 8e3;
+var CACHE_TTL_MS = 5 * 60 * 1e3;
+var cache = /* @__PURE__ */ new Map();
+var unavailable = (note) => ({ ok: false, note });
+async function query(dataset, params) {
+  const url = new URL(`${SOCRATA}/${dataset}.json`);
+  for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
+  const key = url.toString();
+  const hit = cache.get(key);
+  if (hit && Date.now() - hit.at < CACHE_TTL_MS) return { ok: true, data: hit.value };
+  try {
+    const res = await fetch(key, {
+      headers: appToken ? { "X-App-Token": appToken } : void 0,
+      signal: AbortSignal.timeout(TIMEOUT_MS)
+    });
+    if (!res.ok) return unavailable(`NYC Open Data answered ${res.status}.`);
+    const rows7 = await res.json();
+    if (!Array.isArray(rows7)) return unavailable("NYC Open Data returned an unexpected shape.");
+    cache.set(key, { at: Date.now(), value: rows7 });
+    return { ok: true, data: rows7 };
+  } catch (err) {
+    const timedOut = err instanceof Error && err.name === "TimeoutError";
+    return unavailable(timedOut ? "NYC Open Data did not answer in time." : "NYC Open Data is unreachable.");
+  }
+}
+var BOROUGHS = {
+  MN: { name: "Manhattan", acris: "1" },
+  BX: { name: "Bronx", acris: "2" },
+  BK: { name: "Brooklyn", acris: "3" },
+  QN: { name: "Queens", acris: "4" },
+  SI: { name: "Staten Island", acris: "5" }
+};
+var BOROUGH_ALIASES = {
+  MANHATTAN: "MN",
+  MN: "MN",
+  "NEW YORK": "MN",
+  NYC: "MN",
+  BROOKLYN: "BK",
+  BK: "BK",
+  KINGS: "BK",
+  QUEENS: "QN",
+  QN: "QN",
+  BRONX: "BX",
+  BX: "BX",
+  "THE BRONX": "BX",
+  "STATEN ISLAND": "SI",
+  SI: "SI",
+  RICHMOND: "SI"
+};
+var boroughFrom = (input) => input ? BOROUGH_ALIASES[input.trim().toUpperCase()] : void 0;
+var STREET_TYPES = {
+  ST: "STREET",
+  STR: "STREET",
+  "ST.": "STREET",
+  AVE: "AVENUE",
+  AV: "AVENUE",
+  "AVE.": "AVENUE",
+  BLVD: "BOULEVARD",
+  BVD: "BOULEVARD",
+  RD: "ROAD",
+  PL: "PLACE",
+  PLZ: "PLAZA",
+  PKWY: "PARKWAY",
+  PKY: "PARKWAY",
+  DR: "DRIVE",
+  CT: "COURT",
+  LN: "LANE",
+  TER: "TERRACE",
+  TERR: "TERRACE",
+  HWY: "HIGHWAY",
+  SQ: "SQUARE",
+  CIR: "CIRCLE",
+  EXPY: "EXPRESSWAY"
+};
+var DIRECTIONS = {
+  W: "WEST",
+  E: "EAST",
+  N: "NORTH",
+  S: "SOUTH"
+};
+function normalizeAddress(raw) {
+  let s = raw.toUpperCase().replace(/[.,]/g, " ").replace(/(?:#|\b(?:APT|UNIT|STE|SUITE|FL|FLOOR|PH)\b)\s*[\w-]*/g, " ").replace(/\s+/g, " ").trim();
+  const m = /^(\d+[A-Z]?(?:-\d+)?)\s+(.*)$/.exec(s);
+  if (!m) return null;
+  const number = m[1];
+  s = m[2];
+  const words = s.split(" ").filter(Boolean).map((w, i, arr) => {
+    if (DIRECTIONS[w] && i === 0) return DIRECTIONS[w];
+    const ord = /^(\d+)(ST|ND|RD|TH)$/.exec(w);
+    if (ord) return ord[1];
+    if (i === arr.length - 1 && STREET_TYPES[w]) return STREET_TYPES[w];
+    return w;
+  });
+  const street = words.join(" ").trim();
+  return street ? { number, street } : null;
+}
+var sq = (v) => `'${v.replace(/'/g, "''")}'`;
+var num = (v) => {
+  if (v === void 0 || v === null || v === "") return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+};
+var zeroToNull = (n) => n === 0 ? null : n;
+var PLUTO_FIELDS = [
+  "borough",
+  "block",
+  "lot",
+  "address",
+  "zipcode",
+  "bldgclass",
+  "landuse",
+  "zonedist1",
+  "yearbuilt",
+  "yearalter1",
+  "numfloors",
+  "unitsres",
+  "unitstotal",
+  "lotarea",
+  "bldgarea",
+  "resarea",
+  "comarea",
+  "builtfar",
+  "residfar",
+  "commfar",
+  "assessland",
+  "assesstot",
+  "ownername"
+].join(",");
+function toLotFacts(row) {
+  const borough = row.borough ?? "MN";
+  const lot = row.lot ?? "";
+  return {
+    bbl: { borough, block: row.block ?? "", lot },
+    boroughName: BOROUGHS[borough]?.name ?? borough,
+    address: row.address ?? "",
+    zip: row.zipcode || null,
+    buildingClass: row.bldgclass || null,
+    landUse: row.landuse || null,
+    zoning: row.zonedist1 || null,
+    // A condo billing lot carries yearbuilt 0; reporting "built in year 0" is worse than
+    // reporting nothing, so zero becomes null everywhere it means "not recorded".
+    yearBuilt: zeroToNull(num(row.yearbuilt)),
+    yearAltered: zeroToNull(num(row.yearalter1)),
+    floors: zeroToNull(num(row.numfloors)),
+    residentialUnits: num(row.unitsres),
+    totalUnits: num(row.unitstotal),
+    lotAreaSqFt: zeroToNull(num(row.lotarea)),
+    buildingAreaSqFt: zeroToNull(num(row.bldgarea)),
+    residentialAreaSqFt: zeroToNull(num(row.resarea)),
+    commercialAreaSqFt: zeroToNull(num(row.comarea)),
+    builtFar: num(row.builtfar),
+    residentialFar: num(row.residfar),
+    commercialFar: num(row.commfar),
+    assessedLand: zeroToNull(num(row.assessland)),
+    assessedTotal: zeroToNull(num(row.assesstot)),
+    ownerOnTaxRoll: row.ownername || null,
+    // 75xx is the Department of Finance's range for condominium billing lots.
+    isCondoBillingLot: /^75\d\d$/.test(lot)
+  };
+}
+async function findLots(address, borough, limit = 5) {
+  const parsed = normalizeAddress(address);
+  if (!parsed) return unavailable("That does not look like a street address \u2014 a house number is needed.");
+  const clauses = [`address like ${sq(`${parsed.number} ${parsed.street}%`)}`];
+  if (borough) clauses.push(`borough = ${sq(borough)}`);
+  const first = await query(DATASET.pluto, {
+    $select: PLUTO_FIELDS,
+    $where: clauses.join(" AND "),
+    $limit: String(limit)
+  });
+  if (!first.ok) return first;
+  if (first.data.length) return { ok: true, data: first.data.map(toLotFacts) };
+  const head = parsed.street.split(" ")[0];
+  const wide = [`address like ${sq(`${parsed.number} ${head}%`)}`];
+  if (borough) wide.push(`borough = ${sq(borough)}`);
+  const second = await query(DATASET.pluto, {
+    $select: PLUTO_FIELDS,
+    $where: wide.join(" AND "),
+    $limit: String(limit)
+  });
+  if (!second.ok) return second;
+  return { ok: true, data: second.data.map(toLotFacts) };
+}
+var iso = (v) => v ? v.slice(0, 10) : null;
+async function recordedDocuments(borough, block, lot, limit = 40) {
+  const acrisBorough = BOROUGHS[borough].acris;
+  const legals = await query(DATASET.acrisLegals, {
+    $select: "document_id",
+    $where: `borough = ${sq(acrisBorough)} AND block = ${sq(block)} AND lot = ${sq(lot)}`,
+    $limit: String(limit * 3)
+  });
+  if (!legals.ok) return legals;
+  const ids = [...new Set(legals.data.map((r) => r.document_id).filter(Boolean))];
+  if (!ids.length) return { ok: true, data: [] };
+  const master = await query(DATASET.acrisMaster, {
+    $select: "document_id,doc_type,document_date,document_amt,recorded_datetime",
+    $where: `document_id in (${ids.map(sq).join(",")})`,
+    $limit: String(ids.length)
+  });
+  if (!master.ok) return master;
+  const docs = master.data.map((r) => ({
+    documentId: r.document_id ?? "",
+    docType: r.doc_type ?? "",
+    date: iso(r.document_date),
+    recordedAt: iso(r.recorded_datetime),
+    amount: num(r.document_amt)
+  }));
+  docs.sort((a, b) => (b.recordedAt ?? "").localeCompare(a.recordedAt ?? ""));
+  return { ok: true, data: docs.slice(0, limit) };
+}
+var salesFrom = (docs) => docs.filter((d) => d.docType === "DEED" && (d.amount ?? 0) > 0);
+var mortgagesFrom = (docs) => docs.filter((d) => d.docType === "MTGE" && (d.amount ?? 0) > 0);
+async function documentParties(documentId) {
+  const res = await query(DATASET.acrisParties, {
+    $select: "document_id,party_type,name",
+    $where: `document_id = ${sq(documentId)}`,
+    $limit: "20"
+  });
+  if (!res.ok) return res;
+  return {
+    ok: true,
+    data: res.data.map((r) => ({
+      side: r.party_type === "1" ? "grantor" : r.party_type === "2" ? "grantee" : "other",
+      name: r.name ?? ""
+    })).filter((p) => p.name)
+  };
+}
+function unusedFloorArea(lot) {
+  if (lot.residentialFar === null || lot.builtFar === null || lot.lotAreaSqFt === null) return null;
+  const gap = lot.residentialFar - lot.builtFar;
+  if (gap <= 0) return 0;
+  return Math.round(gap * lot.lotAreaSqFt);
+}
+function buildingClassLabel(code) {
+  if (!code) return null;
+  const map = {
+    A: "One-family house",
+    B: "Two-family house",
+    C: "Walk-up apartments",
+    D: "Elevator apartments",
+    E: "Warehouse",
+    F: "Factory or industrial",
+    G: "Garage or gas station",
+    H: "Hotel",
+    I: "Health facility",
+    J: "Theatre",
+    K: "Store building",
+    L: "Loft",
+    M: "Religious facility",
+    N: "Asylum or home",
+    O: "Office building",
+    P: "Place of assembly",
+    Q: "Outdoor recreation",
+    R: "Condominium",
+    S: "Mixed residential and commercial",
+    T: "Transportation facility",
+    U: "Utility",
+    V: "Vacant land",
+    W: "Educational facility",
+    Y: "Government facility",
+    Z: "Miscellaneous"
+  };
+  return map[code[0]] ?? null;
+}
+
 // lib/ai/tools.ts
 var NOW = TODAY.toISOString().slice(0, 10);
 var isDone = (k) => k.status === "done";
 var intent = (action, target, summary, scope) => ({ __intent: true, action, target, summary, actorId: scope.actorId });
 var str = (v, fallback = "") => typeof v === "string" ? v : fallback;
-var num = (v, fallback = 0) => typeof v === "number" ? v : Number(v) || fallback;
+var num2 = (v, fallback = 0) => typeof v === "number" ? v : Number(v) || fallback;
 var PUBLIC_LISTING_STATUSES = ["active", "coming_soon", "under_contract", "pending"];
 function visibleListings(scope) {
   if (scope.tier === 1) return listings.filter((l) => PUBLIC_LISTING_STATUSES.includes(l.status));
@@ -3224,6 +3524,38 @@ var publicAgent = (a) => ({
   licenseNumber: a.license.number,
   yearsExperience: a.license.issued ? TODAY.getFullYear() - new Date(a.license.issued).getFullYear() : null
 });
+function publicLotView(lot) {
+  return {
+    address: lot.address,
+    borough: lot.boroughName,
+    zip: lot.zip,
+    bbl: lot.bbl,
+    buildingClass: lot.buildingClass,
+    buildingType: buildingClassLabel(lot.buildingClass),
+    zoning: lot.zoning,
+    yearBuilt: lot.yearBuilt,
+    lastAltered: lot.yearAltered,
+    floors: lot.floors,
+    residentialUnits: lot.residentialUnits,
+    totalUnits: lot.totalUnits,
+    lotAreaSqFt: lot.lotAreaSqFt,
+    buildingAreaSqFt: lot.buildingAreaSqFt,
+    isCondoBillingLot: lot.isCondoBillingLot
+  };
+}
+function brokerageLotView(lot) {
+  return {
+    residentialAreaSqFt: lot.residentialAreaSqFt,
+    commercialAreaSqFt: lot.commercialAreaSqFt,
+    builtFar: lot.builtFar,
+    residentialFar: lot.residentialFar,
+    unusedResidentialFloorAreaSqFt: unusedFloorArea(lot),
+    assessedLand: lot.assessedLand,
+    assessedTotal: lot.assessedTotal,
+    assessedValueNote: "Assessed value is a Department of Finance tax figure, not market value.",
+    ownerOnTaxRoll: lot.ownerOnTaxRoll
+  };
+}
 var TOOLS = [
   /* ---------------------------------------------------------- respond -- */
   {
@@ -3245,15 +3577,15 @@ var TOOLS = [
       const q = str(a.query).toLowerCase();
       const rows7 = visibleListings(scope).filter((l) => {
         if (q && ![l.address, l.city, l.neighborhood, l.zip].join(" ").toLowerCase().includes(q)) return false;
-        if (a.minPrice != null && l.price < num(a.minPrice)) return false;
-        if (a.maxPrice != null && l.price > num(a.maxPrice)) return false;
-        if (a.beds != null && l.beds < num(a.beds)) return false;
+        if (a.minPrice != null && l.price < num2(a.minPrice)) return false;
+        if (a.maxPrice != null && l.price > num2(a.maxPrice)) return false;
+        if (a.beds != null && l.beds < num2(a.beds)) return false;
         if (a.propertyType && l.propertyType !== str(a.propertyType)) return false;
         return true;
       });
       return {
         matched: rows7.length,
-        results: rows7.slice(0, num(a.limit, 8)).map(publicListing),
+        results: rows7.slice(0, num2(a.limit, 8)).map(publicListing),
         note: rows7.length === 0 ? "No inventory matches. Do not invent alternatives \u2014 offer to have an agent check off-market." : void 0
       };
     }
@@ -3538,9 +3870,9 @@ var TOOLS = [
         found: true,
         hypothetical: true,
         breakdown: computeCommission({
-          salePrice: num(a.salePrice),
-          grossCommissionPct: num(a.grossCommissionPct, 5),
-          sidePct: a.sidePct != null ? num(a.sidePct) : 0.5,
+          salePrice: num2(a.salePrice),
+          grossCommissionPct: num2(a.grossCommissionPct, 5),
+          sidePct: a.sidePct != null ? num2(a.sidePct) : 0.5,
           agentId
         })
       };
@@ -3562,12 +3894,12 @@ var TOOLS = [
     run: (a, scope) => {
       if (!scope.ownBookOf) return { found: false };
       const b = computeCommission({
-        salePrice: num(a.salePrice),
-        grossCommissionPct: num(a.grossCommissionPct, 5),
-        sidePct: a.sidePct != null ? num(a.sidePct) : 0.5,
+        salePrice: num2(a.salePrice),
+        grossCommissionPct: num2(a.grossCommissionPct, 5),
+        sidePct: a.sidePct != null ? num2(a.sidePct) : 0.5,
         agentId: scope.ownBookOf
       });
-      return { found: true, salePrice: num(a.salePrice), breakdown: b };
+      return { found: true, salePrice: num2(a.salePrice), breakdown: b };
     }
   },
   {
@@ -3777,7 +4109,7 @@ var TOOLS = [
       });
       return {
         matched: rows7.length,
-        results: rows7.slice(0, num(a.limit, 12)).map((t) => ({
+        results: rows7.slice(0, num2(a.limit, 12)).map((t) => ({
           id: t.id,
           ref: t.ref,
           address: t.address,
@@ -4267,8 +4599,8 @@ var TOOLS = [
         return { refused: true, reason: `${bad.length} row(s) do not reconcile: ${bad.map((b) => b.reference).join(", ")}. Do not release this run.` };
       }
       const total = rows7.reduce((s, p) => s + p.netPayout, 0);
-      if (num(a.confirmedTotal) !== total) {
-        return { refused: true, reason: `Confirmed total ${num(a.confirmedTotal)} does not match the run total ${total}. Re-confirm with the correct figure.` };
+      if (num2(a.confirmedTotal) !== total) {
+        return { refused: true, reason: `Confirmed total ${num2(a.confirmedTotal)} does not match the run total ${total}. Re-confirm with the correct figure.` };
       }
       return intent("approve_disbursement", { ...a, total }, `Release ${rows7.length} payout(s) totalling ${total}.`, scope);
     }
@@ -4307,6 +4639,134 @@ var TOOLS = [
       `Publish "${str(a.title)}" to ${str(a.audience)} \u2014 ${announcements.length + 1} announcements total.`,
       scope
     )
+  },
+  /* ------------------------------------------------------- NYC PUBLIC RECORDS
+   *
+   * The first tools here that read something other than seeded data. They query NYC Open
+   * Data live — PLUTO for what a building is, ACRIS for what has been recorded against it.
+   *
+   * The tiering is not about secrecy; this is public record. It is about what a brokerage
+   * should put in front of each audience under its own licence. A visitor gets the
+   * building and what it has sold for. An agent gets the analytical layer on top —
+   * assessed value, unused floor area. Only staff get names, and nobody gets an
+   * individual's mailing address, at any tier.
+   */
+  {
+    name: "property_records",
+    kind: "respond",
+    description: "City records for any New York City address, whether or not Tru lists it: building class, zoning, year built, floors, units, floor area, and the recorded sale history with prices actually paid. Use this whenever someone asks about a specific building. It does NOT say whether a property is for sale \u2014 use search_listings for what Tru has on the market.",
+    parameters: {
+      type: "object",
+      properties: {
+        address: { type: "string", description: "Street address with house number, e.g. '84 India Street' or '425 W 21st St'." },
+        borough: { type: "string", description: "Manhattan, Brooklyn, Queens, Bronx or Staten Island. Optional; narrows an ambiguous address." }
+      },
+      required: ["address"]
+    },
+    run: async (a, scope) => {
+      const detailed = scope.tier >= 2;
+      const found = await findLots(str(a.address), boroughFrom(str(a.borough)));
+      if (!found.ok) return { available: false, note: found.note };
+      if (!found.data.length) {
+        return { found: false, note: "No tax lot in the city records matches that address. Check the house number and borough." };
+      }
+      const lots = found.data.slice(0, 3);
+      const results = [];
+      for (const lot of lots) {
+        const docs = await recordedDocuments(lot.bbl.borough, lot.bbl.block, lot.bbl.lot, 40);
+        results.push({
+          ...publicLotView(lot),
+          ...detailed ? brokerageLotView(lot) : {},
+          sales: docs.ok ? salesFrom(docs.data).slice(0, 8).map((d) => ({ date: d.date, recordedAt: d.recordedAt, price: d.amount })) : [],
+          salesNote: docs.ok ? lot.isCondoBillingLot ? "This is a condominium billing lot, so sales shown are for the building as a whole; an individual apartment has its own lot." : void 0 : docs.note
+        });
+      }
+      return {
+        matched: results.length,
+        source: "NYC Open Data \u2014 PLUTO and ACRIS. Public record, not a listing feed.",
+        results,
+        caution: "Recorded sale prices are consideration on the deed. They lag the market by weeks and can differ from a contract price."
+      };
+    }
+  },
+  {
+    name: "development_potential",
+    kind: "verify",
+    description: "Check a New York City lot for unused development rights: what the zoning permits against what is already built, and the resulting air rights in square feet. Use for a seller asking what a site is worth, or an agent sizing an assemblage.",
+    parameters: {
+      type: "object",
+      properties: {
+        address: { type: "string", description: "Street address with house number." },
+        borough: { type: "string", description: "Optional borough to disambiguate." }
+      },
+      required: ["address"]
+    },
+    run: async (a, scope) => {
+      if (scope.tier < 2) return { refused: true, reason: "Development analysis is for Tru agents and staff." };
+      const found = await findLots(str(a.address), boroughFrom(str(a.borough)), 3);
+      if (!found.ok) return { available: false, note: found.note };
+      if (!found.data.length) return { found: false, note: "No tax lot matches that address." };
+      const lot = found.data[0];
+      const unused = unusedFloorArea(lot);
+      const findings = [];
+      if (lot.isCondoBillingLot) findings.push("Condominium billing lot \u2014 FAR figures describe the whole building, not one unit.");
+      if (unused === null) findings.push("PLUTO does not carry the FAR or lot area needed to compute this.");
+      else if (unused === 0) findings.push("The lot is built to or past its residential FAR \u2014 no unused residential floor area.");
+      else findings.push(`About ${unused.toLocaleString("en-US")} sq ft of unused residential floor area.`);
+      return {
+        address: lot.address,
+        borough: lot.boroughName,
+        bbl: lot.bbl,
+        zoning: lot.zoning,
+        lotAreaSqFt: lot.lotAreaSqFt,
+        buildingAreaSqFt: lot.buildingAreaSqFt,
+        builtFar: lot.builtFar,
+        residentialFar: lot.residentialFar,
+        commercialFar: lot.commercialFar,
+        unusedResidentialFloorAreaSqFt: unused,
+        findings,
+        caution: "PLUTO knows zoning and what is built. It does not know landmark status, air rights already transferred, special-district overlays, or anything a zoning attorney would check. Treat this as a screen, not an opinion."
+      };
+    }
+  },
+  {
+    name: "ownership_record",
+    kind: "respond",
+    description: "Who owns a New York City property on the tax roll, the parties on its most recent deed, and the mortgages recorded against it. Staff only.",
+    parameters: {
+      type: "object",
+      properties: {
+        address: { type: "string", description: "Street address with house number." },
+        borough: { type: "string", description: "Optional borough to disambiguate." }
+      },
+      required: ["address"]
+    },
+    run: async (a, scope) => {
+      if (scope.tier < 3) return { refused: true, reason: "Ownership records are limited to brokerage staff." };
+      const found = await findLots(str(a.address), boroughFrom(str(a.borough)), 3);
+      if (!found.ok) return { available: false, note: found.note };
+      if (!found.data.length) return { found: false, note: "No tax lot matches that address." };
+      const lot = found.data[0];
+      const docs = await recordedDocuments(lot.bbl.borough, lot.bbl.block, lot.bbl.lot, 60);
+      if (!docs.ok) {
+        return { address: lot.address, ownerOnTaxRoll: lot.ownerOnTaxRoll, available: false, note: docs.note };
+      }
+      const sales = salesFrom(docs.data);
+      const latest = sales[0];
+      const parties = latest ? await documentParties(latest.documentId) : null;
+      return {
+        address: lot.address,
+        borough: lot.boroughName,
+        bbl: lot.bbl,
+        ownerOnTaxRoll: lot.ownerOnTaxRoll,
+        assessedTotal: lot.assessedTotal,
+        lastRecordedSale: latest ? { date: latest.date, recordedAt: latest.recordedAt, price: latest.amount } : null,
+        // Names only. ACRIS publishes each party's mailing address; this deliberately does not.
+        parties: parties && parties.ok ? parties.data : [],
+        mortgages: mortgagesFrom(docs.data).slice(0, 6).map((d) => ({ date: d.date, recordedAt: d.recordedAt, amount: d.amount })),
+        caution: "The tax-roll owner is often an LLC or a managing agent rather than the person living there. A recorded mortgage may since have been satisfied \u2014 check for a later SAT before relying on a balance."
+      };
+    }
   }
 ];
 var TOOL_BY_NAME = new Map(TOOLS.map((t) => [t.name, t]));
@@ -4437,6 +4897,7 @@ async function callKimi(env2, model, temperature, maxTokens, messages, tools) {
   return await res.json();
 }
 async function handle(req, env2) {
+  setNycAppToken(env2.NYC_APP_TOKEN);
   if (new URL(req.url).pathname === "/health") {
     const base = kimiBase(env2);
     const report = {
@@ -4621,7 +5082,7 @@ async function handle(req, env2) {
       }
       let result;
       try {
-        result = tool.run(args, scope);
+        result = await tool.run(args, scope);
       } catch (err) {
         audit.push(auditEntry(caller, name, args, "error", String(err).slice(0, 200)));
         messages.push({ role: "tool", tool_call_id: call.id, content: JSON.stringify({ error: "Tool failed." }) });
@@ -4692,6 +5153,7 @@ var env = {
   KIMI_MODEL: process.env.KIMI_MODEL,
   KIMI_USER_AGENT: process.env.KIMI_USER_AGENT,
   KIMI_OMIT_TEMPERATURE: process.env.KIMI_OMIT_TEMPERATURE,
+  NYC_APP_TOKEN: process.env.NYC_APP_TOKEN,
   DEMO_SESSIONS: process.env.DEMO_SESSIONS,
   REAL_DATA: process.env.REAL_DATA,
   AUDIT: store

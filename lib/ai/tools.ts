@@ -9,6 +9,11 @@ import { computeCommission } from "@/lib/commission";
 import { agentActivity } from "@/data/derived";
 import { TODAY } from "@/lib/format";
 import type { TransactionTask } from "@/types";
+import {
+  findLots, lotByBbl, recordedDocuments, documentParties, salesFrom, mortgagesFrom,
+  unusedFloorArea, buildingClassLabel, boroughFrom, type LotFacts, type BoroughCode,
+  type Fetched,
+} from "@/lib/nyc/open-data";
 
 /** The demo clock as YYYY-MM-DD, so it compares against ISODate fields directly. */
 const NOW = TODAY.toISOString().slice(0, 10);
@@ -44,7 +49,12 @@ export interface ToolDef {
   parameters: JsonSchema;
   /** respond = read, verify = read + check, operate = returns a write intent. */
   kind: "respond" | "verify" | "operate";
-  run: (args: Record<string, unknown>, scope: Scope) => unknown;
+  /**
+   * May return a promise. Tools that read seeded data are synchronous; the ones that read
+   * NYC public records are not, because the city API is a live dependency. Both call sites
+   * await the result, so a synchronous tool costs nothing for the distinction.
+   */
+  run: (args: Record<string, unknown>, scope: Scope) => unknown | Promise<unknown>;
 }
 
 /** What an `operate` tool returns. The app applies it; the gateway never does. */
@@ -111,6 +121,51 @@ const publicAgent = (a: (typeof agents)[number]) => ({
 });
 
 /* -------------------------------------------------------------- REGISTRY */
+
+/* ------------------------------------------------- NYC RECORD VIEWS BY TIER */
+
+/**
+ * What anyone may be told about a building. Facts about the structure, nothing about the
+ * people in it. This is what a visitor to the public site receives.
+ */
+function publicLotView(lot: LotFacts) {
+  return {
+    address: lot.address,
+    borough: lot.boroughName,
+    zip: lot.zip,
+    bbl: lot.bbl,
+    buildingClass: lot.buildingClass,
+    buildingType: buildingClassLabel(lot.buildingClass),
+    zoning: lot.zoning,
+    yearBuilt: lot.yearBuilt,
+    lastAltered: lot.yearAltered,
+    floors: lot.floors,
+    residentialUnits: lot.residentialUnits,
+    totalUnits: lot.totalUnits,
+    lotAreaSqFt: lot.lotAreaSqFt,
+    buildingAreaSqFt: lot.buildingAreaSqFt,
+    isCondoBillingLot: lot.isCondoBillingLot,
+  };
+}
+
+/**
+ * The layer added for Tru's own agents and staff: the numbers you price and pitch with.
+ * Assessed value is a tax figure and is labelled so, because reading it as market value is
+ * the single most common mistake made with this dataset.
+ */
+function brokerageLotView(lot: LotFacts) {
+  return {
+    residentialAreaSqFt: lot.residentialAreaSqFt,
+    commercialAreaSqFt: lot.commercialAreaSqFt,
+    builtFar: lot.builtFar,
+    residentialFar: lot.residentialFar,
+    unusedResidentialFloorAreaSqFt: unusedFloorArea(lot),
+    assessedLand: lot.assessedLand,
+    assessedTotal: lot.assessedTotal,
+    assessedValueNote: "Assessed value is a Department of Finance tax figure, not market value.",
+    ownerOnTaxRoll: lot.ownerOnTaxRoll,
+  };
+}
 
 export const TOOLS: ToolDef[] = [
 
@@ -1145,6 +1200,157 @@ export const TOOLS: ToolDef[] = [
     },
     run: (a, scope) => intent("post_announcement", a,
       `Publish "${str(a.title)}" to ${str(a.audience)} — ${announcements.length + 1} announcements total.`, scope),
+  },
+
+  /* ------------------------------------------------------- NYC PUBLIC RECORDS
+   *
+   * The first tools here that read something other than seeded data. They query NYC Open
+   * Data live — PLUTO for what a building is, ACRIS for what has been recorded against it.
+   *
+   * The tiering is not about secrecy; this is public record. It is about what a brokerage
+   * should put in front of each audience under its own licence. A visitor gets the
+   * building and what it has sold for. An agent gets the analytical layer on top —
+   * assessed value, unused floor area. Only staff get names, and nobody gets an
+   * individual's mailing address, at any tier.
+   */
+
+  {
+    name: "property_records",
+    kind: "respond",
+    description:
+      "City records for any New York City address, whether or not Tru lists it: building class, zoning, year built, floors, units, floor area, and the recorded sale history with prices actually paid. Use this whenever someone asks about a specific building. It does NOT say whether a property is for sale — use search_listings for what Tru has on the market.",
+    parameters: {
+      type: "object",
+      properties: {
+        address: { type: "string", description: "Street address with house number, e.g. '84 India Street' or '425 W 21st St'." },
+        borough: { type: "string", description: "Manhattan, Brooklyn, Queens, Bronx or Staten Island. Optional; narrows an ambiguous address." },
+      },
+      required: ["address"],
+    },
+    run: async (a, scope) => {
+      const detailed = scope.tier >= 2;
+      const found = await findLots(str(a.address), boroughFrom(str(a.borough)));
+      if (!found.ok) return { available: false, note: found.note };
+      if (!found.data.length) {
+        return { found: false, note: "No tax lot in the city records matches that address. Check the house number and borough." };
+      }
+
+      const lots = found.data.slice(0, 3);
+      const results = [];
+      for (const lot of lots) {
+        const docs = await recordedDocuments(lot.bbl.borough, lot.bbl.block, lot.bbl.lot, 40);
+        results.push({
+          ...publicLotView(lot),
+          ...(detailed ? brokerageLotView(lot) : {}),
+          sales: docs.ok
+            ? salesFrom(docs.data).slice(0, 8).map((d) => ({ date: d.date, recordedAt: d.recordedAt, price: d.amount }))
+            : [],
+          salesNote: docs.ok
+            ? (lot.isCondoBillingLot
+                ? "This is a condominium billing lot, so sales shown are for the building as a whole; an individual apartment has its own lot."
+                : undefined)
+            : docs.note,
+        });
+      }
+      return {
+        matched: results.length,
+        source: "NYC Open Data — PLUTO and ACRIS. Public record, not a listing feed.",
+        results,
+        caution: "Recorded sale prices are consideration on the deed. They lag the market by weeks and can differ from a contract price.",
+      };
+    },
+  },
+
+  {
+    name: "development_potential",
+    kind: "verify",
+    description:
+      "Check a New York City lot for unused development rights: what the zoning permits against what is already built, and the resulting air rights in square feet. Use for a seller asking what a site is worth, or an agent sizing an assemblage.",
+    parameters: {
+      type: "object",
+      properties: {
+        address: { type: "string", description: "Street address with house number." },
+        borough: { type: "string", description: "Optional borough to disambiguate." },
+      },
+      required: ["address"],
+    },
+    run: async (a, scope) => {
+      if (scope.tier < 2) return { refused: true, reason: "Development analysis is for Tru agents and staff." };
+
+      const found = await findLots(str(a.address), boroughFrom(str(a.borough)), 3);
+      if (!found.ok) return { available: false, note: found.note };
+      if (!found.data.length) return { found: false, note: "No tax lot matches that address." };
+
+      const lot = found.data[0];
+      const unused = unusedFloorArea(lot);
+      const findings: string[] = [];
+      if (lot.isCondoBillingLot) findings.push("Condominium billing lot — FAR figures describe the whole building, not one unit.");
+      if (unused === null) findings.push("PLUTO does not carry the FAR or lot area needed to compute this.");
+      else if (unused === 0) findings.push("The lot is built to or past its residential FAR — no unused residential floor area.");
+      else findings.push(`About ${unused.toLocaleString("en-US")} sq ft of unused residential floor area.`);
+
+      return {
+        address: lot.address,
+        borough: lot.boroughName,
+        bbl: lot.bbl,
+        zoning: lot.zoning,
+        lotAreaSqFt: lot.lotAreaSqFt,
+        buildingAreaSqFt: lot.buildingAreaSqFt,
+        builtFar: lot.builtFar,
+        residentialFar: lot.residentialFar,
+        commercialFar: lot.commercialFar,
+        unusedResidentialFloorAreaSqFt: unused,
+        findings,
+        caution:
+          "PLUTO knows zoning and what is built. It does not know landmark status, air rights already transferred, special-district overlays, or anything a zoning attorney would check. Treat this as a screen, not an opinion.",
+      };
+    },
+  },
+
+  {
+    name: "ownership_record",
+    kind: "respond",
+    description:
+      "Who owns a New York City property on the tax roll, the parties on its most recent deed, and the mortgages recorded against it. Staff only.",
+    parameters: {
+      type: "object",
+      properties: {
+        address: { type: "string", description: "Street address with house number." },
+        borough: { type: "string", description: "Optional borough to disambiguate." },
+      },
+      required: ["address"],
+    },
+    run: async (a, scope) => {
+      if (scope.tier < 3) return { refused: true, reason: "Ownership records are limited to brokerage staff." };
+
+      const found = await findLots(str(a.address), boroughFrom(str(a.borough)), 3);
+      if (!found.ok) return { available: false, note: found.note };
+      if (!found.data.length) return { found: false, note: "No tax lot matches that address." };
+
+      const lot = found.data[0];
+      const docs = await recordedDocuments(lot.bbl.borough, lot.bbl.block, lot.bbl.lot, 60);
+      if (!docs.ok) {
+        return { address: lot.address, ownerOnTaxRoll: lot.ownerOnTaxRoll, available: false, note: docs.note };
+      }
+
+      const sales = salesFrom(docs.data);
+      const latest = sales[0];
+      const parties = latest ? await documentParties(latest.documentId) : null;
+
+      return {
+        address: lot.address,
+        borough: lot.boroughName,
+        bbl: lot.bbl,
+        ownerOnTaxRoll: lot.ownerOnTaxRoll,
+        assessedTotal: lot.assessedTotal,
+        lastRecordedSale: latest ? { date: latest.date, recordedAt: latest.recordedAt, price: latest.amount } : null,
+        // Names only. ACRIS publishes each party's mailing address; this deliberately does not.
+        parties: parties && parties.ok ? parties.data : [],
+        mortgages: mortgagesFrom(docs.data).slice(0, 6).map((d) => ({ date: d.date, recordedAt: d.recordedAt, amount: d.amount })),
+        caution:
+          "The tax-roll owner is often an LLC or a managing agent rather than the person living there. A recorded mortgage may since have been satisfied — check for a later SAT before relying on a balance.",
+      };
+    },
   },
 ];
 
