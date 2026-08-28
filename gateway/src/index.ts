@@ -217,25 +217,47 @@ export default {
       };
 
       if (env.KIMI_API_KEY) {
-        try {
-          const probe = await fetch(`${base}/models`, { headers: { Authorization: `Bearer ${env.KIMI_API_KEY}` } });
-          const text = await probe.text();
-          report.kimi = probe.ok
-            ? { ok: true, status: probe.status, models: (JSON.parse(text) as { data?: { id: string }[] }).data?.map((m) => m.id).slice(0, 20) }
-            : {
-                ok: false,
-                status: probe.status,
-                body: text.slice(0, 300),
-                likelyCause:
-                  probe.status === 401
-                    ? `The key is not valid for ${base}. Moonshot's two platforms do not share keys: a key from platform.kimi.ai works only on api.moonshot.ai, and a key from platform.moonshot.cn works only on api.moonshot.cn. Set KIMI_BASE_URL to the other one and redeploy.`
-                    : probe.status === 429
-                      ? "Rate limited, or the platform account has no balance."
-                      : undefined,
-              };
-        } catch (err) {
-          report.kimi = { ok: false, error: String(err).slice(0, 200) };
-        }
+        const k = env.KIMI_API_KEY;
+        // The key's SHAPE, never the key. Length, prefix and stray whitespace are what
+        // actually go wrong, and none of them are usable by themselves. Flip-flopping
+        // between endpoints one deploy at a time wastes more time than it saves, so both
+        // are probed in one call.
+        report.keyShape = {
+          length: k.length,
+          prefix: k.slice(0, 3),
+          hasWhitespace: /\s/.test(k),
+          looksLikeMoonshotKey: k.startsWith("sk-"),
+          note: /\s/.test(k)
+            ? "The key contains whitespace or a newline — almost certainly a paste artefact. Re-run `wrangler secret put KIMI_API_KEY` and paste without a trailing newline."
+            : !k.startsWith("sk-")
+              ? "Moonshot platform keys start with `sk-`. This does not, so it is probably not a Developer Platform API key — a Kimi app subscription does not issue one."
+              : undefined,
+        };
+
+        const probe = async (base: string) => {
+          try {
+            const r = await fetch(`${base}/models`, { headers: { Authorization: `Bearer ${k}` } });
+            const text = await r.text();
+            return r.ok
+              ? { ok: true, status: r.status, models: (JSON.parse(text) as { data?: { id: string }[] }).data?.map((m) => m.id) }
+              : { ok: false, status: r.status, body: text.slice(0, 200) };
+          } catch (err) {
+            return { ok: false, error: String(err).slice(0, 160) };
+          }
+        };
+
+        const [intl, cn] = await Promise.all([
+          probe("https://api.moonshot.ai/v1"),
+          probe("https://api.moonshot.cn/v1"),
+        ]);
+        report.endpoints = { "api.moonshot.ai": intl, "api.moonshot.cn": cn };
+
+        const working = intl.ok ? "https://api.moonshot.ai/v1" : cn.ok ? "https://api.moonshot.cn/v1" : null;
+        report.verdict = working
+          ? working === base
+            ? "Key works and KIMI_BASE_URL is correct."
+            : `Key works on ${working}, but KIMI_BASE_URL is set to ${base}. Change it and redeploy.`
+          : "The key is rejected by BOTH platforms, so this is the key itself, not the endpoint. Either it is not a Developer Platform API key, or the platform account has never been funded — Moonshot requires a top-up before a key becomes active.";
       }
 
       return new Response(JSON.stringify(report, null, 2), {
