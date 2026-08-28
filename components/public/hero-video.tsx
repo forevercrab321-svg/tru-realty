@@ -59,10 +59,37 @@ export function HeroVideo({ className }: { className?: string }) {
     const el = videoRef.current;
     if (!el || !source) return;
     el.load();
+
+    // Only cross-fade once frames are genuinely advancing. Revealing on `canplay` would
+    // show a frozen first frame whenever playback is blocked, which reads as a broken
+    // page; the still image is a better fallback than a stuck video.
     const reveal = () => setPlaying(true);
-    el.addEventListener("canplay", reveal, { once: true });
-    el.play().catch(() => {});
-    return () => el.removeEventListener("canplay", reveal);
+    const conceal = () => setPlaying(false);
+
+    // A muted autoplay can still be refused or suspended: a background tab, iOS Low Power
+    // Mode, a strict autoplay setting. One play() attempt at mount is not enough, so we
+    // retry whenever the page becomes visible again and on the visitor's first gesture.
+    const attempt = () => {
+      if (el.paused) void el.play().catch(() => {});
+    };
+    const onVisible = () => {
+      if (document.visibilityState === "visible") attempt();
+    };
+
+    el.addEventListener("playing", reveal);
+    el.addEventListener("error", conceal);
+    document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("pointerdown", attempt, { passive: true });
+    window.addEventListener("keydown", attempt);
+    attempt();
+
+    return () => {
+      el.removeEventListener("playing", reveal);
+      el.removeEventListener("error", conceal);
+      document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("pointerdown", attempt);
+      window.removeEventListener("keydown", attempt);
+    };
   }, [source]);
 
   return (
@@ -75,6 +102,7 @@ export function HeroVideo({ className }: { className?: string }) {
       {source && (
         <video
           ref={videoRef}
+          autoPlay
           muted
           loop
           playsInline
