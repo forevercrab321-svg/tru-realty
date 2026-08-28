@@ -79,9 +79,9 @@ deploy, then `curl /health` and read `verdict`.
 
 ## Deploy - Vercel
 
-Non-secret configuration is already in `gateway/vercel/vercel.json`, so only the two
-secrets need entering. Each `env add` prompts for the value; neither ever touches a file
-or git.
+Vercel no longer supports an `env` key in `vercel.json`, so all seven variables are
+project Environment Variables. Set them in the dashboard during import (its field accepts
+a pasted `.env` block), or from the CLI:
 
 ```bash
 cd gateway/vercel
@@ -92,6 +92,23 @@ npx vercel login
 ```bash
 npx vercel link --yes
 ```
+
+The five that are not secrets:
+
+```bash
+printf 'ALLOWED_ORIGINS\nKIMI_BASE_URL\nKIMI_MODEL\nDEMO_SESSIONS\nREAL_DATA\n' | while read n; do echo "add $n"; done
+```
+
+| Name | Value |
+|---|---|
+| `ALLOWED_ORIGINS` | `https://forevercrab321-svg.github.io,http://localhost:3000,http://localhost:4000` |
+| `KIMI_BASE_URL` | `https://api.kimi.com/coding/v1` |
+| `KIMI_MODEL` | `k3` |
+| `DEMO_SESSIONS` | `true` |
+| `REAL_DATA` | `false` |
+
+Then the two that are, each prompting for its value:
+
 ```bash
 npx vercel env add KIMI_API_KEY production
 ```

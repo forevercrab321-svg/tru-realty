@@ -13,7 +13,12 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { handle } from "../gateway.bundle.js";
 
-export const config = { runtime: "nodejs" };
+/*
+ * No `export const config = { runtime: "edge" }` here, and there must never be one.
+ * Vercel's Node.js runtime is the default for an `api/*.ts` function and runs on AWS
+ * Lambda; opting into Edge would move it onto Cloudflare's network, which is exactly
+ * what api.kimi.com refuses. The absence of that line is load-bearing.
+ */
 
 /** Node's request object into a Web `Request`, which is all the handler understands. */
 async function toWebRequest(req: IncomingMessage): Promise<Request> {
