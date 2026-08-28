@@ -563,8 +563,28 @@ export async function handle(req: Request, env: Env): Promise<Response> {
     }
   }
 
+  // ---- The loop is exhausted. The old behaviour here was to return a canned English
+  //      sentence and throw away everything the tools had already retrieved, which is how
+  //      a reasonable question ("first home, $1.5M, good commute, resells well") produced
+  //      five searches and no answer. A budget for *tool calls* is not a reason to have no
+  //      answer: ask once more with no tools, so the model has to write from what it has.
+  let content = "I looked several things up but could not finish that. Ask me something narrower.";
+  try {
+    messages.push({
+      role: "system",
+      content:
+        "Your tool budget for this turn is spent. Do not request another tool. Answer now, in the user's language, using only what the tool results above already contain. If they do not answer the question, say plainly what you could and could not find and offer the next step. Never invent a listing, a price or an availability.",
+    });
+    const final = await callKimi(env, env.KIMI_MODEL || def.model.name, def.model.temperature, def.model.maxTokens, messages, []);
+    const text = final.choices[0]?.message?.content?.trim();
+    if (text) content = text;
+  } catch {
+    // Keep the fallback sentence. A failure here must not turn into a 502 on a turn that
+    // already has usable tool output behind it.
+  }
+
   await flush(env, audit);
-  return json({ content: "I ran out of steps working on that. Ask me something narrower.", steps, pending }, 200, headers);
+  return json({ content, steps, pending }, 200, headers);
 }
 
 /** Cloudflare Workers entry point. Kept so the code still deploys there for other origins. */

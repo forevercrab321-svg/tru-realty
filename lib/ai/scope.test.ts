@@ -335,3 +335,43 @@ describe("NYC public records", () => {
     expect(out.found).toBe(false);
   });
 });
+
+/* ------------------------------------------------ SEARCH WITH NO MATCHES -- */
+
+/**
+ * The failure this covers is not a leak, it is worse in a demo: the assistant looked
+ * competent and said nothing useful. A buyer asked a normal question, `search_listings`
+ * returned a bare `matched: 0`, and the model — with no way to tell a typo from an empty
+ * market — searched five more times, spent the turn's budget and answered "I ran out of
+ * steps". An empty result has to carry enough context to be answerable in one call.
+ */
+describe("search_listings when nothing matches", () => {
+  const emptyResult = () => TOOL_BY_NAME.get("search_listings")!.run(
+    { query: "Nowhere", maxPrice: 1, beds: 9 }, scopeFor(publicCaller),
+  ) as {
+    matched: number;
+    inventory?: { total: number; priceFrom: number | null; priceTo: number | null; neighborhoods: string[]; bedrooms: number[] };
+    closest?: unknown[];
+    note?: string;
+  };
+
+  it("describes the inventory that does exist instead of a bare zero", () => {
+    const out = emptyResult();
+    expect(out.matched).toBe(0);
+    expect(out.inventory!.total).toBeGreaterThan(0);
+    expect(out.inventory!.priceFrom).toBeTypeOf("number");
+    expect(out.inventory!.neighborhoods.length).toBeGreaterThan(0);
+    expect(out.closest!.length).toBeGreaterThan(0);
+  });
+
+  it("tells the model to stop searching rather than to try other filters", () => {
+    expect(String(emptyResult().note)).toMatch(/do NOT search again/i);
+  });
+
+  it("still shows a visitor only published inventory in the fallback", () => {
+    const out = emptyResult();
+    const shown = json(out.closest);
+    expect(shown).not.toContain("commission");
+    expect(shown).not.toContain("draft");
+  });
+});

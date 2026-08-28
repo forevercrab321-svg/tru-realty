@@ -197,10 +197,35 @@ export const TOOLS: ToolDef[] = [
         if (a.propertyType && l.propertyType !== str(a.propertyType)) return false;
         return true;
       });
+      if (rows.length) {
+        return { matched: rows.length, results: rows.slice(0, num(a.limit, 8)).map(publicListing) };
+      }
+
+      // Nothing matched. Returning a bare zero is what makes a model guess again with
+      // slightly different filters until it runs out of turns — it has no way to tell a
+      // typo from a genuinely empty market. So say what the inventory actually is, and
+      // hand back the nearest few, so one call is enough to answer honestly.
+      const pool = visibleListings(scope);
+      const prices = pool.map((l) => l.price).sort((x, y) => x - y);
+      const target = a.maxPrice != null ? num(a.maxPrice) : a.minPrice != null ? num(a.minPrice) : null;
+      const nearest = target === null
+        ? pool.slice(0, 3)
+        : [...pool].sort((x, y) => Math.abs(x.price - target) - Math.abs(y.price - target)).slice(0, 3);
+
       return {
-        matched: rows.length,
-        results: rows.slice(0, num(a.limit, 8)).map(publicListing),
-        note: rows.length === 0 ? "No inventory matches. Do not invent alternatives — offer to have an agent check off-market." : undefined,
+        matched: 0,
+        results: [],
+        inventory: {
+          total: pool.length,
+          priceFrom: prices[0] ?? null,
+          priceTo: prices[prices.length - 1] ?? null,
+          neighborhoods: [...new Set(pool.map((l) => l.neighborhood).filter(Boolean))],
+          bedrooms: [...new Set(pool.map((l) => l.beds))].sort((x, y) => x - y),
+          propertyTypes: [...new Set(pool.map((l) => l.propertyType))],
+        },
+        closest: nearest.map(publicListing),
+        note:
+          "Nothing matches those filters. This is the whole of what we currently have, so do NOT search again with different filters — say plainly that we have nothing at that brief, show the closest options above, and offer to have an agent watch for new inventory or check off-market. Never invent a listing.",
       };
     },
   },

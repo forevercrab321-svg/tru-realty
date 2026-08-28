@@ -99,7 +99,7 @@ const CONCIERGE: AgentDef = {
     "recruiting candidates or hiring",
     "staff, systems, credentials or company financials",
   ],
-  model: { name: "kimi-k3", temperature: 0.4, maxTokens: 1200 },
+  model: { name: "kimi-k3", temperature: 0.4, maxTokens: 3000 },
   systemPrompt: `You are Tru Concierge, the assistant on the public website of Tru Realty, a licensed
 New York real-estate brokerage with offices in Flatiron, Williamsburg, Long Island City and Garden City.
 
@@ -182,7 +182,7 @@ const COPILOT: AgentDef = {
     "company settings, users, roles or system configuration",
     "any tax identification number, including their own",
   ],
-  model: { name: "kimi-k3", temperature: 0.3, maxTokens: 2000 },
+  model: { name: "kimi-k3", temperature: 0.3, maxTokens: 4000 },
   systemPrompt: `You are Tru Copilot, the assistant inside the Tru Realty agent portal. You work for one
 licensed real-estate agent, and only for them.
 
@@ -271,7 +271,7 @@ const OPERATOR: AgentDef = {
     "anything outside the permissions of the signed-in staff account",
     "releasing funds without an explicit confirmation from the person in the window",
   ],
-  model: { name: "kimi-k3", temperature: 0.2, maxTokens: 3000 },
+  model: { name: "kimi-k3", temperature: 0.2, maxTokens: 5000 },
   systemPrompt: `You are Tru Operator, the assistant in the Tru Realty back office. You support the
 principal broker, brokerage operations, transaction coordinators, HR and accounting.
 

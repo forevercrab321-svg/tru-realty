@@ -73,7 +73,7 @@ var CONCIERGE = {
     "recruiting candidates or hiring",
     "staff, systems, credentials or company financials"
   ],
-  model: { name: "kimi-k3", temperature: 0.4, maxTokens: 1200 },
+  model: { name: "kimi-k3", temperature: 0.4, maxTokens: 3e3 },
   systemPrompt: `You are Tru Concierge, the assistant on the public website of Tru Realty, a licensed
 New York real-estate brokerage with offices in Flatiron, Williamsburg, Long Island City and Garden City.
 
@@ -186,7 +186,7 @@ var COPILOT = {
     "company settings, users, roles or system configuration",
     "any tax identification number, including their own"
   ],
-  model: { name: "kimi-k3", temperature: 0.3, maxTokens: 2e3 },
+  model: { name: "kimi-k3", temperature: 0.3, maxTokens: 4e3 },
   systemPrompt: `You are Tru Copilot, the assistant inside the Tru Realty agent portal. You work for one
 licensed real-estate agent, and only for them.
 
@@ -305,7 +305,7 @@ var OPERATOR = {
     "anything outside the permissions of the signed-in staff account",
     "releasing funds without an explicit confirmation from the person in the window"
   ],
-  model: { name: "kimi-k3", temperature: 0.2, maxTokens: 3e3 },
+  model: { name: "kimi-k3", temperature: 0.2, maxTokens: 5e3 },
   systemPrompt: `You are Tru Operator, the assistant in the Tru Realty back office. You support the
 principal broker, brokerage operations, transaction coordinators, HR and accounting.
 
@@ -592,9 +592,14 @@ function walk(value, deny, depth) {
   return out;
 }
 var LIMITS = {
-  concierge: { messagesPerSession: 30, messagesPerHour: 60, toolCallsPerTurn: 4, maxInputChars: 1500 },
-  copilot: { messagesPerSession: 200, messagesPerHour: 300, toolCallsPerTurn: 8, maxInputChars: 6e3 },
-  operator: { messagesPerSession: 300, messagesPerHour: 500, toolCallsPerTurn: 12, maxInputChars: 12e3 }
+  // `toolCallsPerTurn` bounds *model rounds*, not individual calls — a round may carry
+  // several. Four was too tight for the public window: a normal buyer question ("first
+  // home, this budget, good commute") legitimately needs a search, a fallback search and
+  // a neighborhood lookup before there is anything to say. It stays bounded, because a
+  // model that keeps calling tools is stuck and an unbounded loop is a bill.
+  concierge: { messagesPerSession: 30, messagesPerHour: 60, toolCallsPerTurn: 6, maxInputChars: 1500 },
+  copilot: { messagesPerSession: 200, messagesPerHour: 300, toolCallsPerTurn: 10, maxInputChars: 6e3 },
+  operator: { messagesPerSession: 300, messagesPerHour: 500, toolCallsPerTurn: 14, maxInputChars: 12e3 }
 };
 function auditEntry(caller, tool, args, outcome, detail) {
   return {
@@ -3583,10 +3588,26 @@ var TOOLS = [
         if (a.propertyType && l.propertyType !== str(a.propertyType)) return false;
         return true;
       });
+      if (rows7.length) {
+        return { matched: rows7.length, results: rows7.slice(0, num2(a.limit, 8)).map(publicListing) };
+      }
+      const pool = visibleListings(scope);
+      const prices = pool.map((l) => l.price).sort((x, y) => x - y);
+      const target = a.maxPrice != null ? num2(a.maxPrice) : a.minPrice != null ? num2(a.minPrice) : null;
+      const nearest = target === null ? pool.slice(0, 3) : [...pool].sort((x, y) => Math.abs(x.price - target) - Math.abs(y.price - target)).slice(0, 3);
       return {
-        matched: rows7.length,
-        results: rows7.slice(0, num2(a.limit, 8)).map(publicListing),
-        note: rows7.length === 0 ? "No inventory matches. Do not invent alternatives \u2014 offer to have an agent check off-market." : void 0
+        matched: 0,
+        results: [],
+        inventory: {
+          total: pool.length,
+          priceFrom: prices[0] ?? null,
+          priceTo: prices[prices.length - 1] ?? null,
+          neighborhoods: [...new Set(pool.map((l) => l.neighborhood).filter(Boolean))],
+          bedrooms: [...new Set(pool.map((l) => l.beds))].sort((x, y) => x - y),
+          propertyTypes: [...new Set(pool.map((l) => l.propertyType))]
+        },
+        closest: nearest.map(publicListing),
+        note: "Nothing matches those filters. This is the whole of what we currently have, so do NOT search again with different filters \u2014 say plainly that we have nothing at that brief, show the closest options above, and offer to have an agent watch for new inventory or check off-market. Never invent a listing."
       };
     }
   },
@@ -5100,8 +5121,19 @@ async function handle(req, env2) {
       messages.push({ role: "tool", tool_call_id: call.id, content: JSON.stringify(redactFor(def.id, result)).slice(0, 24e3) });
     }
   }
+  let content = "I looked several things up but could not finish that. Ask me something narrower.";
+  try {
+    messages.push({
+      role: "system",
+      content: "Your tool budget for this turn is spent. Do not request another tool. Answer now, in the user's language, using only what the tool results above already contain. If they do not answer the question, say plainly what you could and could not find and offer the next step. Never invent a listing, a price or an availability."
+    });
+    const final = await callKimi(env2, env2.KIMI_MODEL || def.model.name, def.model.temperature, def.model.maxTokens, messages, []);
+    const text = final.choices[0]?.message?.content?.trim();
+    if (text) content = text;
+  } catch {
+  }
   await flush(env2, audit);
-  return json({ content: "I ran out of steps working on that. Ask me something narrower.", steps, pending }, 200, headers);
+  return json({ content, steps, pending }, 200, headers);
 }
 async function flush(env2, entries) {
   if (!env2.AUDIT || !entries.length) return;

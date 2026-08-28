@@ -166,9 +166,14 @@ export const LIMITS: Record<AgentId, {
   toolCallsPerTurn: number;
   maxInputChars: number;
 }> = {
-  concierge: { messagesPerSession: 30, messagesPerHour: 60, toolCallsPerTurn: 4, maxInputChars: 1500 },
-  copilot:   { messagesPerSession: 200, messagesPerHour: 300, toolCallsPerTurn: 8, maxInputChars: 6000 },
-  operator:  { messagesPerSession: 300, messagesPerHour: 500, toolCallsPerTurn: 12, maxInputChars: 12000 },
+  // `toolCallsPerTurn` bounds *model rounds*, not individual calls — a round may carry
+  // several. Four was too tight for the public window: a normal buyer question ("first
+  // home, this budget, good commute") legitimately needs a search, a fallback search and
+  // a neighborhood lookup before there is anything to say. It stays bounded, because a
+  // model that keeps calling tools is stuck and an unbounded loop is a bill.
+  concierge: { messagesPerSession: 30, messagesPerHour: 60, toolCallsPerTurn: 6, maxInputChars: 1500 },
+  copilot:   { messagesPerSession: 200, messagesPerHour: 300, toolCallsPerTurn: 10, maxInputChars: 6000 },
+  operator:  { messagesPerSession: 300, messagesPerHour: 500, toolCallsPerTurn: 14, maxInputChars: 12000 },
 };
 
 /* ----------------------------------------------------------------- AUDIT */
