@@ -79,16 +79,48 @@ deploy, then `curl /health` and read `verdict`.
 
 ## Deploy - Vercel
 
+Non-secret configuration is already in `gateway/vercel/vercel.json`, so only the two
+secrets need entering. Each `env add` prompts for the value; neither ever touches a file
+or git.
+
 ```bash
 cd gateway/vercel
+```
+```bash
+npx vercel login
+```
+```bash
+npx vercel link --yes
+```
+```bash
+npx vercel env add KIMI_API_KEY production
+```
+```bash
+openssl rand -base64 48 | pbcopy
+```
+```bash
+npx vercel env add SESSION_SECRET production
 ```
 ```bash
 npx vercel deploy --prod
 ```
 
-Then set the environment variables in the Vercel dashboard (Project -> Settings ->
-Environment Variables), using the same table as the Deno section below. Vercel's CLI login
-is interactive and belongs to you — nothing here needs your token.
+Then confirm, and read `verdict`:
+
+```bash
+curl -s https://<the-url-vercel-printed>/health
+```
+
+The login is interactive and belongs to you — nothing here needs your token.
+
+**The runtime is pinned to Node.js on purpose.** Vercel's Edge Functions run on
+Cloudflare's network, which is precisely what `api.kimi.com` refuses. `api/gateway.ts`
+sets `runtime: "nodejs"`; do not change it to `edge`.
+
+One limitation to know: the audit log and rate limits are per-instance memory on Vercel,
+and Lambda recycles instances. That blunts a burst but is not a durable record. For real
+supervision, point the `store` get/put at Vercel KV or Upstash — the handler asks for
+nothing more than those two methods.
 
 ## Deploy - Alibaba Function Compute
 

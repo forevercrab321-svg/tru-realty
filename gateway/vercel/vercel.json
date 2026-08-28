@@ -1,6 +1,26 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
+
   "rewrites": [
     { "source": "/(.*)", "destination": "/api/gateway" }
-  ]
+  ],
+
+  "// env": [
+    "Non-secret runtime configuration lives here so deployment needs only two interactive",
+    "prompts instead of seven. KIMI_API_KEY and SESSION_SECRET are NOT here and never",
+    "should be: this file is in git. Set those with `vercel env add`, which prompts for the",
+    "value and stores it encrypted.",
+    "",
+    "KIMI_BASE_URL / KIMI_MODEL below are set for a Kimi Code subscription key. For a",
+    "pay-as-you-go key use https://api.moonshot.cn/v1 (or .ai) with model kimi-k3.",
+    "GET /health probes all three and tells you which one your key belongs to."
+  ],
+  "env": {
+    "ALLOWED_ORIGINS": "https://forevercrab321-svg.github.io,http://localhost:3000,http://localhost:4000",
+    "KIMI_BASE_URL": "https://api.kimi.com/coding/v1",
+    "KIMI_MODEL": "k3",
+    "KIMI_USER_AGENT": "kimi-cli/1.0",
+    "DEMO_SESSIONS": "true",
+    "REAL_DATA": "false"
+  }
 }
