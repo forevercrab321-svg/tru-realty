@@ -48,8 +48,8 @@ export function AudienceRouter() {
     {
       key: "agent",
       eyebrow: "Already with Tru",
-      title: "Agent console",
-      body: "Your deals, clients, listings, commission and payouts. Sign in to the portal your whole business runs on.",
+      title: "Agent & staff console",
+      body: "Agents: your deals, clients, listings, commission and payouts. Operations, HR and accounting: the back office. Same door — your account decides where it opens.",
       icon: <LayoutDashboard />,
       tone: "brand" as const,
       primary: <Button variant="primary" full size="lg" asChild><Link href="/login"><LogIn /> Open the console</Link></Button>,

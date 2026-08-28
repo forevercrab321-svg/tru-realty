@@ -60,8 +60,11 @@ export function SiteHeader() {
           <a href={`tel:${company.phone}`} className={cn("hidden items-center gap-1.5 text-[13px] font-medium lg:flex", light ? "text-white/85 hover:text-white" : "text-ink-2 hover:text-ink")}>
             <Phone className="size-3.5" /> {phoneFmt(company.phone)}
           </a>
+          {/* One door for everyone who works here; the account decides where it lands.
+              It used to read "Agent login", which is accurate for two thirds of the people
+              who need it and invisible to the third that runs the back office. */}
           <Button size="sm" variant={light ? "secondary" : "secondary"} asChild className="hidden sm:inline-flex">
-            <Link href="/login">Agent login</Link>
+            <Link href="/login">Sign in</Link>
           </Button>
           <Button size="sm" variant={light ? "dark" : "primary"} asChild className="hidden sm:inline-flex">
             <Link href="/contact">Get started</Link>
@@ -86,7 +89,7 @@ export function SiteHeader() {
             ))}
           </nav>
           <div className="mt-4 flex gap-2">
-            <Button variant="secondary" full asChild><Link href="/login">Agent login</Link></Button>
+            <Button variant="secondary" full asChild><Link href="/login">Sign in</Link></Button>
             <Button variant="primary" full asChild><Link href="/contact">Get started</Link></Button>
           </div>
         </div>
