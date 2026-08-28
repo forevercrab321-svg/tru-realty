@@ -125,6 +125,36 @@
   }
   .animate-in-up { animation: inUp 0.35s var(--ease-out-quint) both; }
   .animate-fade { animation: fadeIn 0.25s var(--ease-out-quint) both; }
+
+  /* ---------------------------------------------------------------- PANES --
+     Surfaces that float over the fixed backdrop video on the homepage.
+
+     The opacities are set by contrast, not by taste. The footage is dusk-lit, so
+     anything showing through darkens a light pane; `--pane-light` sits at 95% because
+     that is the point where secondary text (--color-ink-3) still clears 4.5:1 against
+     what is behind it. Dark panes can be far more open — veiling a dark video with a
+     dark wash leaves white text well above AA — which is why the dark sections are
+     where the skyline actually reads. */
+  .pane-light {
+    background: color-mix(in srgb, var(--color-canvas) 95%, transparent);
+  }
+  .pane-lifted {
+    background: color-mix(in srgb, var(--color-surface) 95%, transparent);
+  }
+  /* No backdrop-filter here on purpose. A blur across a full-width section forces the
+     compositor to re-filter that whole region on every video frame, which is exactly the
+     kind of thing that turns a phone's scroll to mush. The translucency alone carries the
+     effect, and the contrast pass clears AA without the blur helping. */
+  .pane-dark {
+    background: color-mix(in srgb, var(--color-ink) 72%, transparent);
+  }
+  .pane-brand {
+    background: color-mix(in srgb, var(--color-brand-900) 76%, transparent);
+  }
+  /* Feathered top edge so a pane rises out of the video instead of cutting it off. */
+  .pane-feather-t {
+    mask-image: linear-gradient(to bottom, transparent, #000 56px);
+  }
 }
 
 @keyframes inUp { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }

@@ -34,7 +34,12 @@ export function SiteHeader() {
       "fixed inset-x-0 top-0 z-40 transition-all duration-300",
       scrolled || !overHero ? "border-b border-line bg-canvas/90 backdrop-blur-md" : "bg-transparent"
     )}>
-      <div className="mx-auto flex h-[68px] max-w-[1280px] items-center gap-8 px-5 sm:px-8">
+      {/* Transparent over a hero means the nav is sitting on whatever the footage is doing.
+          A short top-down scrim guarantees a floor for every item in the bar at once. */}
+      {light && (
+        <div aria-hidden className="pointer-events-none absolute inset-x-0 top-0 h-[130px] bg-gradient-to-b from-ink/70 via-ink/30 to-transparent" />
+      )}
+      <div className="relative mx-auto flex h-[68px] max-w-[1280px] items-center gap-8 px-5 sm:px-8">
         <Logo tone={light ? "light" : "brand"} />
         <nav className="hidden items-center gap-1 md:flex">
           {PUBLIC_NAV.map((n) => (
@@ -43,7 +48,7 @@ export function SiteHeader() {
               href={n.href}
               className={cn(
                 "rounded-[7px] px-2.5 py-1.5 text-[13.5px] font-medium transition-colors",
-                light ? "text-white/80 hover:bg-white/10 hover:text-white" : "text-ink-2 hover:bg-subtle hover:text-ink",
+                light ? "text-white hover:bg-white/10 hover:text-white" : "text-ink-2 hover:bg-subtle hover:text-ink",
                 pathname.startsWith(n.href) && (light ? "text-white" : "text-ink")
               )}
             >
@@ -52,7 +57,7 @@ export function SiteHeader() {
           ))}
         </nav>
         <div className="ml-auto flex items-center gap-2">
-          <a href={`tel:${company.phone}`} className={cn("hidden items-center gap-1.5 text-[13px] font-medium lg:flex", light ? "text-white/75 hover:text-white" : "text-ink-2 hover:text-ink")}>
+          <a href={`tel:${company.phone}`} className={cn("hidden items-center gap-1.5 text-[13px] font-medium lg:flex", light ? "text-white/85 hover:text-white" : "text-ink-2 hover:text-ink")}>
             <Phone className="size-3.5" /> {phoneFmt(company.phone)}
           </a>
           <Button size="sm" variant={light ? "secondary" : "secondary"} asChild className="hidden sm:inline-flex">
@@ -92,7 +97,7 @@ export function SiteHeader() {
 
 export function SiteFooter() {
   return (
-    <footer className="border-t border-line bg-subtle/50">
+    <footer className="relative z-10 border-t border-line bg-subtle">
       <div className="mx-auto max-w-[1280px] px-5 py-14 sm:px-8">
         <div className="grid gap-10 lg:grid-cols-[1.4fr_repeat(3,1fr)]">
           <div>
