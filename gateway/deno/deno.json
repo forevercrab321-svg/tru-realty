@@ -1,0 +1,10 @@
+{
+  "tasks": {
+    "dev": "deno run -A --watch main.ts",
+    "deploy": "deployctl deploy --project=tru-ai-gateway --entrypoint=main.ts --include=../.."
+  },
+  "compilerOptions": {
+    "lib": ["deno.window", "deno.unstable", "esnext"]
+  },
+  "nodeModulesDir": "none"
+}
