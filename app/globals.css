@@ -145,3 +145,12 @@
 
 [data-state="open"].dialog-content { animation: scaleIn 0.2s var(--ease-out-quint); }
 [data-state="open"].drawer-content { animation: slideInRight 0.28s var(--ease-out-quint); }
+
+@keyframes cue {
+  0% { transform: translateY(-100%); }
+  60%, 100% { transform: translateY(600%); }
+}
+@keyframes marquee {
+  from { transform: translateX(0); }
+  to { transform: translateX(-50%); }
+}
