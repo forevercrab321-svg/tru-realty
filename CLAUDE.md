@@ -18,6 +18,11 @@ Read `docs/product-architecture.md` before making changes. The short version:
   `operate` tool returns a write intent — it never mutates. Read `docs/ai-agents.md`
   before touching any of it.
 - Never put a key in `NEXT_PUBLIC_*`. This is a static export; that bundle is public.
+- **Route permissions**: a page under `/admin` or `/agent` must be registered in `lib/nav.ts`
+  — a nav item, or `UNLISTED_ROUTES` if it has no sidebar entry. `RequireRouteAccess`
+  denies what it does not recognise, and `lib/route-access.test.ts` fails if a page on disk
+  is unregistered. The nav and the guard read one registry so they cannot disagree. This is
+  client-side and is NOT a security boundary — never describe it as one.
 - **NYC public records** (`lib/nyc/open-data.ts`) are read live, never scraped from a
   portal. Listings come from a licensed MLS feed or not at all. `ToolDef.run` may return a
   promise; both call sites await it.

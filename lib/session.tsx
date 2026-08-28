@@ -1,8 +1,10 @@
 "use client";
 import * as React from "react";
-import { useRouter } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import type { Permission, RoleKey } from "@/types";
 import { can } from "./permissions";
+import { firstAllowedRoute, routeAccess } from "./nav";
+import { NoAccess } from "@/components/shared/no-access";
 import { staffUsers } from "@/data/company";
 import { agents } from "@/data/agents";
 
@@ -125,7 +127,25 @@ export function useStaffUser() {
   return staffUsers.find((u) => u.id === account?.userId) ?? null;
 }
 
-/** Client-side portal guard. Falls back to the demo login when no session exists. */
+/**
+ * The portal guard: who may be here, and on which page.
+ *
+ * It used to check only the portal, so every route under `/admin` served its full contents
+ * to any signed-in staff account. The sidebar hid what a role could not use, and the URL
+ * handed it over anyway — a transaction coordinator typing `/admin/payouts` read every
+ * agent's TIN, and the AI assistant refused the same request one panel away. Two answers to
+ * the same question in one product.
+ *
+ * The permission now comes from `routeAccess()`, which reads the same nav registry the
+ * sidebar renders from, so a hidden link and a refused URL cannot disagree. An unregistered
+ * route is denied rather than allowed; `lib/route-access.test.ts` makes sure none exists.
+ *
+ * **This is a client-side check on a static export, and it is not a security boundary.**
+ * It is correct behaviour, not enforcement: the data is in the bundle, so anyone determined
+ * enough reads it regardless. Real enforcement arrives with the server and row-level
+ * security in Phase 3 — see docs/data-model.md — and this map is the specification it will
+ * implement. Nothing here should ever be described to a client as securing anything.
+ */
 export function RequirePortal({ portal, children }: { portal: "admin" | "agent"; children: React.ReactNode }) {
   const { account, ready } = useSession();
   const router = useRouter();
@@ -146,5 +166,36 @@ export function RequirePortal({ portal, children }: { portal: "admin" | "agent";
       </div>
     );
   }
+
   return <>{children}</>;
+}
+
+/**
+ * The per-route half of the guard, rendered *inside* the shell rather than around it.
+ *
+ * That placement is the whole design: the sidebar stays, still listing exactly what this
+ * role can open, and the refusal appears in the content pane beside it. Replacing the
+ * entire screen would strand the person with one button and no way to see where they are
+ * allowed to go — and it would hide the very thing worth seeing, which is that the nav and
+ * the URL now agree.
+ */
+export function RequireRouteAccess({ portal, children }: { portal: "admin" | "agent"; children: React.ReactNode }) {
+  const { account, hasPermission } = useSession();
+  const pathname = usePathname();
+  if (!account) return null;
+
+  const access = routeAccess(portal, pathname ?? `/${portal}`);
+  const permitted =
+    access.kind === "registered" && (!access.permission || hasPermission(access.permission));
+  if (permitted) return <>{children}</>;
+
+  const home = firstAllowedRoute(portal, hasPermission);
+  return (
+    <NoAccess
+      permission={access.kind === "registered" ? access.permission : undefined}
+      role={account.role}
+      backHref={home}
+      backLabel={home === "/login" ? "Back to sign in" : "Go to a page you can open"}
+    />
+  );
 }
